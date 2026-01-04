@@ -18,7 +18,7 @@ except Exception as e:
 HASLO_DOSTEPU = "DUNAJEC30"
 # Uwaga: 'gemini-3-pro-preview' może nie istnieć publicznie, 
 # bezpieczniej użyć 'gemini-1.5-pro' lub 'gemini-1.5-flash'
-MODEL_NAME = "gemini-1.5-pro" 
+MODEL_NAME = "gemini-3-pro" 
 TEMPERATURE = 0.0
 
 generation_config = {
