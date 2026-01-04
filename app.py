@@ -6,20 +6,51 @@ from datetime import datetime
 # --- KONFIGURACJA STRONY ---
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 
-# --- KONFIGURACJA MODELU ---
-# Upewnij się, że masz plik .streamlit/secrets.toml z kluczem GOOGLE_API_KEY
+# --- KONFIGURACJA MODELU (NA SZTYWNO) ---
+MODEL_NAME = "gemini-3-pro-preview"
+TEMPERATURE = 0.0
+
+# --- 1. OBSŁUGA OPERATORA ---
+DOSTEPNI_OPERATORZY = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
+
+# Pobranie operatora z linku (np. ?operator=Iwona)
+query_params = st.query_params
+url_operator = query_params.get("operator", None)
+
+# Ustalenie domyślnego indeksu
+default_index = 0
+if url_operator in DOSTEPNI_OPERATORZY:
+    default_index = DOSTEPNI_OPERATORZY.index(url_operator)
+
+# --- PANEL BOCZNY ---
+with st.sidebar:
+    st.title("⚙️ Panel Techniczny")
+    
+    # WYBÓR OPERATORA
+    st.subheader("👤 Operator")
+    wybrany_operator = st.selectbox(
+        "Kto obsługuje?",
+        DOSTEPNI_OPERATORZY,
+        index=default_index
+    )
+    
+    st.markdown("---")
+    
+    # INFO O MODELU (TYLKO ODCZYT)
+    st.subheader("🧠 Parametry")
+    st.info(f"**Model:** `{MODEL_NAME}`")
+    st.info(f"**Temp:** `{TEMPERATURE}`")
+    
+    if st.button("🗑️ Resetuj rozmowę"):
+        st.session_state.messages = []
+        st.rerun()
+
+# --- KONFIGURACJA API ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except Exception as e:
-    st.error("Brak klucza API w secrets.toml!")
+    st.error("Brak klucza API w pliku .streamlit/secrets.toml!")
     st.stop()
-
-# Parametry
-HASLO_DOSTEPU = "DUNAJEC30"
-# Uwaga: 'gemini-3-pro-preview' może nie istnieć publicznie, 
-# bezpieczniej użyć 'gemini-1.5-pro' lub 'gemini-1.5-flash'
-MODEL_NAME = "gemini-3-pro" 
-TEMPERATURE = 0.0
 
 generation_config = {
     "temperature": TEMPERATURE,
@@ -28,31 +59,8 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- PANEL BOCZNY (SIDEBAR) ---
-with st.sidebar:
-    st.title("⚙️ Panel Techniczny")
-    st.markdown("---")
-    st.subheader("Parametry modelu:")
-    
-    # Wyświetlanie modelu
-    st.info(f"🧠 **Model:**\n`{MODEL_NAME}`")
-    
-    # Wyświetlanie temperatury
-    st.info(f"🌡️ **Temperatura:** `{TEMPERATURE}`")
-    
-    st.markdown("---")
-    st.caption("System: Szturchacz v4.6.16")
-    
-    # Przycisk do resetu pamięci (opcjonalnie)
-    if st.button("🗑️ Resetuj rozmowę"):
-        st.session_state.messages = []
-        st.rerun()
-
-# --- ZMIENNE POMOCNICZE ---
-# Ustawiamy domyślnego operatora, żeby uniknąć błędu w tytule
-wybrany_operator = "Emilia" 
-
 # --- PROMPT (POCZĄTEK ZMIENNEJ) ---
+
 SYSTEM_INSTRUCTION_BASE = """
 # ASYSTENT „SZTURCHACZ” – PROMPT GŁÓWNY V4.6.16 — PATCH 04.01 (DUNAJEC_CIEPLY)
 
@@ -1739,14 +1747,19 @@ godziny_fedex='8-16:30'
 godziny_ups='8-18'
 """
 
-# ^^^ To jest zamknięcie cudzysłowu promptu (nie usuwaj tego)
+# ^^^ Zamknięcie cudzysłowu promptu
 
-# --- NAPRAWA BŁĘDÓW I INICJALIZACJA ---
+# --- 2. DYNAMICZNA PODMIANA OPERATORA W PROMPCIE ---
+if "domyslny_operator=" in SYSTEM_INSTRUCTION_BASE:
+    FULL_PROMPT = re.sub(
+        r"domyslny_operator=.*", 
+        f"domyslny_operator={wybrany_operator}", 
+        SYSTEM_INSTRUCTION_BASE
+    )
+else:
+    FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + f"\ndomyslny_operator={wybrany_operator}"
 
-# 1. Przypisanie zmiennej, której brakowało
-FULL_PROMPT = SYSTEM_INSTRUCTION_BASE
-
-# 2. Inicjalizacja modelu
+# --- INICJALIZACJA MODELU ---
 try:
     model = genai.GenerativeModel(
         model_name=MODEL_NAME,
@@ -1754,74 +1767,46 @@ try:
         system_instruction=FULL_PROMPT
     )
 except Exception as e:
-    st.error(f"Błąd inicjalizacji modelu: {e}")
+    st.error(f"Błąd inicjalizacji modelu '{MODEL_NAME}': {e}")
     st.stop()
 
-# --- GŁÓWNE OKNO APLIKACJI ---
+# --- GŁÓWNE OKNO ---
 st.title(f"🤖 Szturchacz ({wybrany_operator})")
 
 # --- LOGIKA CZATU ---
-
-# Inicjalizacja historii w sesji
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Automatyczny start (niewidoczny dla użytkownika, widoczny dla modelu)
-# Uruchamia się tylko gdy historia jest pusta
+# Auto-start
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
-            # Tworzymy tymczasową sesję, żeby wysłać "start"
             chat_init = model.start_chat(history=[])
             response_init = chat_init.send_message("start")
-            
-            # Zapisujemy odpowiedź modelu (powitanie) do widoku
-            st.session_state.messages.append({
-                "role": "model",
-                "content": response_init.text
-            })
+            st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
-        st.error(f"Błąd startu (auto-start): {e}")
+        st.error(f"Błąd startu: {e}")
 
-# Wyświetlanie historii czatu
+# Wyświetlanie historii
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Obsługa wejścia użytkownika
-if prompt := st.chat_input("Wklej wsad lub wpisz komendę..."):
-    # 1. Wyświetl wiadomość użytkownika
+# Obsługa wejścia
+if prompt := st.chat_input("Wklej wsad..."):
     with st.chat_message("user"):
         st.markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # 2. Pobierz odpowiedź modelu
     with st.chat_message("model"):
         with st.spinner("Analizuję..."):
             try:
-                # ODTWARZANIE HISTORII DLA API
-                # Model musi "myśleć", że pierwszą wiadomością było "start" (user),
-                # mimo że w st.session_state tego nie trzymamy, żeby nie śmiecić widoku.
-                
-                history_for_api = []
-                
-                # A. Dodajemy ukryty start
-                history_for_api.append({"role": "user", "parts": ["start"]})
-                
-                # B. Dodajemy resztę widocznej historii
+                # Budowanie historii dla API
+                history_for_api = [{"role": "user", "parts": ["start"]}]
                 for m in st.session_state.messages:
-                    if m["role"] == "user":
-                        history_for_api.append({"role": "user", "parts": [m["content"]]})
-                    elif m["role"] == "model":
-                        history_for_api.append({"role": "model", "parts": [m["content"]]})
+                    history_for_api.append({"role": m["role"], "parts": [m["content"]]})
                 
-                # C. Uruchamiamy czat z historią (bez ostatniego prompta, bo on idzie w send_message)
-                # history_for_api[:-1] usuwa ostatnią wiadomość usera, którą właśnie dodaliśmy do widoku,
-                # ponieważ metoda send_message(prompt) sama ją doda.
-                
-                # Uwaga: Jeśli to pierwsza wiadomość po starcie, history_for_api ma: [start, model_welcome, user_prompt]
-                # Musimy przekazać do history: [start, model_welcome]
-                
+                # Uruchomienie czatu
                 chat = model.start_chat(history=history_for_api[:-1])
                 response = chat.send_message(prompt)
                 
@@ -1829,4 +1814,4 @@ if prompt := st.chat_input("Wklej wsad lub wpisz komendę..."):
                 st.session_state.messages.append({"role": "model", "content": response.text})
                 
             except Exception as e:
-                st.error(f"Wystąpił błąd: {e}")
+                st.error(f"Wystąpił błąd API: {e}")
