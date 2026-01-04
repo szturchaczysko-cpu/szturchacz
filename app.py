@@ -1741,23 +1741,29 @@ Gdy instancja jest uruchamiana bez WSADU sprawy (operator wkleił prompt/kartote
 - Nie stosujesz formatu 0.4 (4 sekcje) i nie uruchamiasz analizy sprawy.
 
 # PARAMETRY STARTOWE (DO UZUPEŁNIENIA RĘCZNIE)
-domyslny_operator=Emilia
-domyslna_data=30.12
+godziny_fedex='8-16:30'
+godziny_ups='8-18'
+
+""" 
+# ^^^ Zamknięcie cudzysłowu promptu (SYSTEM_INSTRUCTION_BASE)
+
+# --- 2. AUTOMATYCZNE DOKLEJANIE PARAMETRÓW ---
+
+# A. Pobieranie dzisiejszej daty (format DD.MM, np. 04.01)
+dzisiaj = datetime.now().strftime("%d.%m")
+
+# B. Tworzenie bloku parametrów
+# Doklejamy operatora z panelu, datę z systemu i stałe godziny
+parametry_startowe = f"""
+# PARAMETRY STARTOWE (GENEROWANE AUTOMATYCZNIE)
+domyslny_operator={wybrany_operator}
+domyslna_data={dzisiaj}
 godziny_fedex='8-16:30'
 godziny_ups='8-18'
 """
 
-# ^^^ Zamknięcie cudzysłowu promptu
-
-# --- 2. DYNAMICZNA PODMIANA OPERATORA W PROMPCIE ---
-if "domyslny_operator=" in SYSTEM_INSTRUCTION_BASE:
-    FULL_PROMPT = re.sub(
-        r"domyslny_operator=.*", 
-        f"domyslny_operator={wybrany_operator}", 
-        SYSTEM_INSTRUCTION_BASE
-    )
-else:
-    FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + f"\ndomyslny_operator={wybrany_operator}"
+# C. Sklejenie całości
+FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
 
 # --- INICJALIZACJA MODELU ---
 try:
@@ -1772,6 +1778,7 @@ except Exception as e:
 
 # --- GŁÓWNE OKNO ---
 st.title(f"🤖 Szturchacz ({wybrany_operator})")
+st.caption(f"Data systemowa: {dzisiaj} | Model: {MODEL_NAME}")
 
 # --- LOGIKA CZATU ---
 if "messages" not in st.session_state:
