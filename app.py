@@ -7,7 +7,7 @@ from datetime import datetime
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 
 # --- KONFIGURACJA MODELU (NA SZTYWNO) ---
-MODEL_NAME = "gemini-3-flash-preview"
+MODEL_NAME = "gemini-2.5-pro"
 TEMPERATURE = 0.0
 
 # --- 1. OBSŁUGA OPERATORA ---
