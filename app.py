@@ -19,7 +19,7 @@ st.set_page_config(page_title="Szturchacz AI", layout="wide")
 
 # --- KONFIGURACJA MODELU ---
 # Używamy wersji stable lub latest, aby uniknąć problemów wersji preview
-MODEL_NAME = "gemini-1.5-pro-latest" 
+MODEL_NAME = "gemini-3.0-pro-preview" 
 TEMPERATURE = 0.0
 
 # --- 1. PANEL BOCZNY I PARAMETRY ---
