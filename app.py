@@ -1,51 +1,89 @@
+code
+Python
 import streamlit as st
 import google.generativeai as genai
-import re
 from datetime import datetime
+import locale
 
-# --- KONFIGURACJA STRONY ---
+# --- 0. KONFIGURACJA ŚRODOWISKA ---
+
+# Próba ustawienia polskiego locale dla poprawnych dni tygodnia (np. "Wtorek")
+# To kluczowe, żeby model wiedział jaki jest dzień tygodnia w roku 2026
+try:
+    locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
+except locale.Error:
+    try:
+        locale.setlocale(locale.LC_TIME, "pl_PL")
+    except:
+        pass # Fallback do domyślnego, jeśli serwer nie ma PL
+
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 
-# --- KONFIGURACJA MODELU (NA SZTYWNO) ---
-MODEL_NAME = "gemini-3-pro-preview"
+# --- KONFIGURACJA MODELU ---
+# Używamy wersji stable lub latest, aby uniknąć problemów wersji preview
+MODEL_NAME = "gemini-1.5-pro-latest" 
 TEMPERATURE = 0.0
 
-# --- 1. OBSŁUGA OPERATORA ---
-DOSTEPNI_OPERATORZY = ["Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
+# --- 1. PANEL BOCZNY I PARAMETRY ---
 
-# Pobranie operatora z linku (np. ?operator=Iwona)
-query_params = st.query_params
-url_operator = query_params.get("operator", None)
+# Lista operatorów - PIERWSZY ELEMENT PUSTY (wymusza wybór)
+DOSTEPNI_OPERATORZY = ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
 
-# Ustalenie domyślnego indeksu
-default_index = 0
-if url_operator in DOSTEPNI_OPERATORZY:
-    default_index = DOSTEPNI_OPERATORZY.index(url_operator)
+# Słownik trybów: Nazwa w menu -> Kod parametru dla prompta
+TRYBY_WSADU = {
+    "Standard (Panel + Koperta)": "od_szturchacza",
+    "WhatsApp (Rolka + Panel)": "WA",
+    "E-mail (Rolka + Panel)": "MAIL",
+    "Forum/Inne (Wpis + Panel)": "FORUM"
+}
 
-# --- PANEL BOCZNY ---
 with st.sidebar:
-    st.title("⚙️ Panel Techniczny")
+    st.title("⚙️ Panel Sterowania")
     
-    # WYBÓR OPERATORA
+    # A. Wybór Operatora
     st.subheader("👤 Operator")
     wybrany_operator = st.selectbox(
         "Kto obsługuje?",
         DOSTEPNI_OPERATORZY,
-        index=default_index
+        index=0 # Domyślnie pusty
     )
+
+    # B. Wybór Trybu Wsadu
+    st.subheader("📥 Tryb Wsadu")
+    wybrany_tryb_label = st.selectbox(
+        "Skąd pochodzi wsad?",
+        list(TRYBY_WSADU.keys()),
+        index=0
+    )
+    # Mapowanie wybranej nazwy na kod (np. "WA")
+    wybrany_tryb_kod = TRYBY_WSADU[wybrany_tryb_label]
     
     st.markdown("---")
+    st.caption(f"Model: `{MODEL_NAME}`")
     
-    # INFO O MODELU (TYLKO ODCZYT)
-    st.subheader("🧠 Parametry")
-    st.info(f"**Model:** `{MODEL_NAME}`")
-    st.info(f"**Temp:** `{TEMPERATURE}`")
-    
+    # Przycisk twardego resetu
     if st.button("🗑️ Resetuj rozmowę"):
         st.session_state.messages = []
         st.rerun()
 
-# --- KONFIGURACJA API ---
+# --- 2. LOGIKA STANU (RESET PRZY ZMIANIE OPERATORA) ---
+
+if "last_operator" not in st.session_state:
+    st.session_state.last_operator = wybrany_operator
+
+# Jeśli operator się zmienił -> czyścimy czat
+if st.session_state.last_operator != wybrany_operator:
+    st.session_state.messages = []
+    st.session_state.last_operator = wybrany_operator
+    st.rerun()
+
+# --- 3. BLOKADA STARTU ---
+# Jeśli operator jest pusty (index 0), zatrzymujemy skrypt tutaj.
+if not wybrany_operator:
+    st.info("👈 Proszę wybrać operatora z menu po lewej stronie, aby rozpocząć pracę.")
+    st.stop()
+
+# --- 4. KONFIGURACJA API ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except Exception as e:
@@ -59,10 +97,10 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- PROMPT (POCZĄTEK ZMIENNEJ) ---
+# --- 5. PROMPT GŁÓWNY (PLACEHOLDER) ---
 
 SYSTEM_INSTRUCTION_BASE = """
-# ASYSTENT „SZTURCHACZ” – PROMPT GŁÓWNY V4.6.17 — PATCH 04.01 (DUNAJEC_CIEPLY)
+# ASYSTENT „SZTURCHACZ” – PROMPT GŁÓWNY V4.6.18 — PATCH 06.01 (DUNAJEC_CIEPLY)
 
 
 Jesteś asystentem operatorów aplikacji „Szturchacz”. Twoje cele (🟥):
@@ -113,7 +151,7 @@ WYJĄTEK: komendy ROLKA (7.6.2) mają payload w kolejnych liniach.
 
 0.1.2. BRAKDYSkUSJI – BRAMKA KOMEND I ZAKAZ DYSKUSJI (🟥)
 Dozwolone wejścia:
-A) WSAD PANEL (tabelka z panelu + opcjonalnie koperta),
+A) WSAD PANEL (tabelka z panelu + opcjonalnie koperta; oraz opcjonalnie 1 blok ROLKA_START_[KANAL] tylko w KROK START i tylko gdy domyslny_tryb=kanal),
 B) komendy SESJI (0.1.1 oraz 7.5.2 / 7.6.2 / 8.3.1 / 11.4.1 / 12.13.1),
 C) komendy techniczne: ZAPLANUJ POPRAWKE [opis] lub POPRAWKA FORUM_ID [ID],
 D) komenda startowa: TRYB ODPOWIEDZI (opcjonalnie).
@@ -166,6 +204,16 @@ B) SESJA / PRACA PRZERWANA
  
 
 0.4. Struktura każdej odpowiedzi (TRYB ODPOWIEDZI) (🟥)
+
+0.4.0. Widoczność sekcji „INSTRUKCJA DLA OPERATORA” (🟥)
+- W TRYB ODPOWIEDZI nagłówki sekcji formatuj jako nagłówki markdown.
+- Sekcję 2 zapisuj zawsze jako:
+  "## ✅✅✅ [INSTRUKCJA DLA OPERATORA]"
+  (ma być wyraźnie większa niż pozostałe nagłówki).
+- Pozostałe sekcje jako "### ...".
+
+
+
 WYJĄTKI:
 - Bramka 0.1.2 → tylko komunikat bramkowy.
 - KROK START (14) → tylko powitanie + prośba o WSAD STARTOWY (panel‑only).
@@ -186,6 +234,7 @@ Standard: 4 sekcje:
 - Na końcu [INSTRUKCJA DLA OPERATORA] dodaj: Po wykonaniu odpisz w czacie: SESJA WYNIK [NUMER] – ...
 
 - CLARIFY (🟥): Wymaganą komendę wyniku (np. SESJA WYNIK [NUMER] – ...) pokaż operatorowi jako osobny BLOK „KOPIUJ‑WKLEJ” zgodnie z 0.4.3 (w bloku tylko komenda).
+
  
 
 0.4.2. TRYB: SESJA — FINALIZACJA SESJI (🟥)
@@ -286,7 +335,10 @@ Sesja:
 - WSAD sprawy = WSAD PANEL (wiersz/tabelka) + opcjonalnie koperta.
 - Jeśli wejście wygląda jak wiersz/panel → traktuj jako WSAD i nie proś o „wklej wsad”.
 - ROLKA kanału ≠ WSAD PANEL (rolki pobierasz na żądanie w SESJI – 7.6.2).
-- Wklejenie prompta/kartoteki ≠ WSAD → KROK START (14).
+  WYJĄTEK: jeśli domyslny_tryb=kanal i to jest WSAD STARTOWY (KROK START 14) → dopuszczalny jest jeden blok: ROLKA_START_[KANAL] (patrz 14.2).
+
+
+​​​​- Wklejenie prompta/kartoteki ≠ WSAD → KROK START (14).
 - SESJA OK/STOP/WYNIK [NUMER] → kontynuacja SESJI (nie resetuj sprawy).
 
 0.7.1. OPERATOR vs SPRZEDAWCA (🟥)
@@ -357,30 +409,35 @@ Po POPRAWKA FORUM_ID [ID] (🟥):
 Na końcu promptu:
 - domyslny_operator= (Emilia / Oliwia / Iwona / Marlena / Magda / Sylwia / Ewelina / Klaudia)
 - domyslna_data= (DD.MM, np. 10.12)
+- domyslny_tryb= (obecny / kanal)
+  - obecny = start z panelu Szturchacz (WSAD: tabelka + koperta; bez rolek)
+  - kanal = start z odczytu wiadomości (WSAD: tabelka + koperta + 1 rolka źródłowa)
 - godziny_fedex= (okno godzinowe odbioru FedEx do komunikacji z klientem; domyślnie '8-16:30')
 - godziny_ups= (okno godzinowe odbioru UPS do komunikacji z klientem; domyślnie '8-18')
 
-3.1. Parametry puste
-Jeśli oba są puste:
-- zapytaj:
-- „Kto dzisiaj prowadzi sprawy – Emilia, Oliwia, Iwona, Marlena, Magda, Sylwia, Ewelina czy Klaudia?”
-- „Jaka jest dzisiejsza data (format DD.MM, np. 10.12)?”
+3.1. Parametry brakujące (🟥)
+Jeśli domyslny_operator jest puste LUB domyslna_data jest puste:
+- NIE uruchamiasz analizy sprawy ani KROK START (14).
+- Zwracasz wyłącznie komunikat konfiguracyjny (bez 4 sekcji):
+  "KONFIGURACJA WYMAGANA — ustaw w parametrach startowych: domyslny_operator oraz domyslna_data (DD.MM), a następnie uruchom instancję ponownie."
 
-3.2. Parametry częściowe
-Jeśli jedno pole jest ustawione, a drugie puste:
-- ❗ „BŁĄD: Błędna konfiguracja parametrów startowych. Uzupełnij: operator, data.”
+3.2. Parametry częściowe (🟥)
+Jeśli jedno z pól (domyslny_operator / domyslna_data) jest ustawione, a drugie puste:
+- Traktuj to jak błąd konfiguracji:
+  "BŁĄD: Błędna konfiguracja parametrów startowych. Uzupełnij komplet: operator + data. Następnie uruchom instancję ponownie."
+- NIE uruchamiasz analizy sprawy ani KROK START (14).
 
-CLARIFY V4.6.7 (🟥) – parametry godzin odbioru
-- godziny_fedex i godziny_ups nie są parametrami bramkującymi uruchomienie instancji.
-- Jeśli godziny_fedex jest puste → przyjmij domyślnie: '8-16:30'.
-- Jeśli godziny_ups jest puste → przyjmij domyślnie: '8-18'.
-
-3.3. Parametry poprawne
-Jeśli oba pola są poprawne:
+3.3. Parametry poprawne (🟥)
+Jeśli domyslny_operator i domyslna_data są poprawne:
 - przyjmujesz,
 - ustawiasz:
 - operator,
 - data_dzisiaj = domyslna_data.
+
+3.3.1. Parametr domyslny_tryb (🟥)
+- Jeśli domyslny_tryb jest puste lub niepoprawne → przyjmij domyślnie: domyslny_tryb=obecny.
+- Dozwolone wartości: obecny / kanal.
+ 
 
 3.4. TABELA OSÓB (ADMIN) – OPERATORZY i SPRZEDAWCY + TEL_JEZYKI (🟥) — NOWE w V4.6.2
 Cel (🟥): jedno źródło prawdy dla telefonu i delegacji telefonu; administrator może to ręcznie rozszerzać/edytować.
@@ -1786,37 +1843,53 @@ Przykłady (nieobowiązkowe):
 
 14. START (🟥)
 Gdy instancja jest uruchamiana bez WSADU sprawy (operator wkleił prompt/kartotekę lub napisał „start”):
+- Jeśli parametry startowe nie są kompletne (domyslny_operator lub domyslna_data puste) → zastosuj 3.1/3.2 i STOP.
 - Przywitaj domyslny_operator.
-- Poproś o WSAD STARTOWY: tabelka z panelu Szturchacz + opcjonalnie aktualna koperta (bez rolek WA/mail/eBay/Allegro).
-- Nie stosujesz formatu 0.4 (4 sekcje) i nie uruchamiasz analizy sprawy.
+- Następnie poproś o WSAD STARTOWY zależnie od domyslny_tryb:
 
-# PARAMETRY STARTOWE (DO UZUPEŁNIENIA RĘCZNIE)
-domyslny_operator=Emilia
-domyslna_data=30.12
-godziny_fedex='8-16:30'
-godziny_ups='8-18'
-""" 
-# ^^^ Zamknięcie cudzysłowu promptu (SYSTEM_INSTRUCTION_BASE)
+A) domyslny_tryb=obecny (panel):
+- Poproś o WSAD STARTOWY: tabelka z panelu Szturchacz + opcjonalnie aktualna koperta.
+- Wyraźnie dopisz: BEZ rolek WA/mail/eBay/Allegro/Forum.
 
-# --- 2. AUTOMATYCZNE DOKLEJANIE PARAMETRÓW ---
+B) domyslny_tryb=kanal (odczyt wiadomości):
+- Poproś o WSAD STARTOWY: tabelka z panelu Szturchacz + koperta + jedna rolka źródłowa z kanału, z którego operator startuje (WA / MAIL / EBAY / AL / FORUM / INNE).
+- Rolka musi być wklejona jako blok poprzedzony jedną linią nagłówka: ROLKA_START_[KANAL].
+- Nie stosujesz formatu 0.4 (4 sekcje) i nie uruchamiasz analizy sprawy, dopóki nie dostaniesz WSAD zgodnego z trybem.
 
-# A. Pobieranie dzisiejszej daty (format DD.MM, np. 04.01)
-dzisiaj = datetime.now().strftime("%d.%m")
+14.2. Format ROLKA_START (🟥)
+- Dozwolone nagłówki:
+  - ROLKA_START_WA
+  - ROLKA_START_MAIL
+  - ROLKA_START_EBAY
+  - ROLKA_START_AL
+  - ROLKA_START_FORUM
+  - ROLKA_START_INNE
+- Pod nagłówkiem operator wkleja treść źródłową (bez komentarzy asystenta), możliwie pełną i z rozróżnieniem MY/KLIENT lub autorów.
+"""
 
-# B. Tworzenie bloku parametrów
-# Doklejamy operatora z panelu, datę z systemu i stałe godziny
+# --- 6. WSTRZYKIWANIE PARAMETRÓW (DYNAMICZNE) ---
+
+# Pobranie daty systemowej
+now = datetime.now()
+data_krotka = now.strftime("%d.%m")             # np. "06.01" (dla logiki tagów)
+data_pelna = now.strftime("%A, %d.%m.%Y")       # np. "Wtorek, 06.01.2026" (dla kontekstu modelu)
+
+# Budowanie bloku parametrów
+# Tutaj wstrzykujemy rok 2026 (przez data_pelna) i wybrany tryb
 parametry_startowe = f"""
-# PARAMETRY STARTOWE (GENEROWANE AUTOMATYCZNIE)
+# PARAMETRY STARTOWE (GENEROWANE AUTOMATYCZNIE PRZEZ PYTHON)
 domyslny_operator={wybrany_operator}
-domyslna_data={dzisiaj}
+domyslna_data={data_krotka}
+kontekst_daty='{data_pelna}'
+domyslny_tryb={wybrany_tryb_kod}
 godziny_fedex='8-16:30'
 godziny_ups='8-18'
 """
 
-# C. Sklejenie całości
+# Sklejenie prompta bazowego z parametrami
 FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
 
-# --- INICJALIZACJA MODELU ---
+# --- 7. INICJALIZACJA MODELU ---
 try:
     model = genai.GenerativeModel(
         model_name=MODEL_NAME,
@@ -1824,22 +1897,24 @@ try:
         system_instruction=FULL_PROMPT
     )
 except Exception as e:
-    st.error(f"Błąd inicjalizacji modelu '{MODEL_NAME}': {e}")
+    st.error(f"Błąd inicjalizacji modelu: {e}")
     st.stop()
 
-# --- GŁÓWNE OKNO ---
-st.title(f"🤖 Szturchacz ({wybrany_operator})")
-st.caption(f"Data systemowa: {dzisiaj} | Model: {MODEL_NAME}")
+# --- 8. INTERFEJS CZATU ---
 
-# --- LOGIKA CZATU ---
+st.title(f"🤖 Szturchacz ({wybrany_operator})")
+# Wyświetlamy operatorowi, jaki tryb jest aktywny i jaka jest data systemowa
+st.caption(f"📅 Data: **{data_pelna}** | 📥 Tryb: **{wybrany_tryb_label}**")
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Auto-start
+# Auto-start (wysłanie "start" przy pierwszym uruchomieniu)
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
             chat_init = model.start_chat(history=[])
+            # Wysyłamy "start", żeby prompt (sekcja 14) mógł zareagować na parametry
             response_init = chat_init.send_message("start")
             st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
@@ -1850,7 +1925,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Obsługa wejścia
+# Obsługa wejścia użytkownika
 if prompt := st.chat_input("Wklej wsad..."):
     with st.chat_message("user"):
         st.markdown(prompt)
