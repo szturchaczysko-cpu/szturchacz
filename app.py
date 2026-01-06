@@ -4,30 +4,25 @@ from datetime import datetime
 import locale
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
-
-# Próba ustawienia polskiego locale dla poprawnych dni tygodnia (np. "Wtorek")
-# To kluczowe, żeby model wiedział jaki jest dzień tygodnia w roku 2026
 try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except locale.Error:
     try:
         locale.setlocale(locale.LC_TIME, "pl_PL")
     except:
-        pass # Fallback do domyślnego, jeśli serwer nie ma PL
+        pass
 
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 
 # --- KONFIGURACJA MODELU ---
-# Używamy wersji stable lub latest, aby uniknąć problemów wersji preview
-MODEL_NAME = "gemini-3-pro-preview" 
+MODEL_NAME = "gemini-1.5-pro-latest" 
 TEMPERATURE = 0.0
 
 # --- 1. PANEL BOCZNY I PARAMETRY ---
 
-# Lista operatorów - PIERWSZY ELEMENT PUSTY (wymusza wybór)
 DOSTEPNI_OPERATORZY = ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
 
-# Słownik trybów: Nazwa w menu -> Kod parametru dla prompta
+# Słownik trybów: Nazwa w menu -> Kod parametru
 TRYBY_WSADU = {
     "Standard (Panel + Koperta)": "od_szturchacza",
     "WhatsApp (Rolka + Panel)": "WA",
@@ -38,50 +33,42 @@ TRYBY_WSADU = {
 with st.sidebar:
     st.title("⚙️ Panel Sterowania")
     
-    # A. Wybór Operatora
     st.subheader("👤 Operator")
     wybrany_operator = st.selectbox(
         "Kto obsługuje?",
         DOSTEPNI_OPERATORZY,
-        index=0 # Domyślnie pusty
+        index=0
     )
 
-    # B. Wybór Trybu Wsadu
     st.subheader("📥 Tryb Wsadu")
     wybrany_tryb_label = st.selectbox(
         "Skąd pochodzi wsad?",
         list(TRYBY_WSADU.keys()),
         index=0
     )
-    # Mapowanie wybranej nazwy na kod (np. "WA")
     wybrany_tryb_kod = TRYBY_WSADU[wybrany_tryb_label]
     
     st.markdown("---")
     st.caption(f"Model: `{MODEL_NAME}`")
     
-    # Przycisk twardego resetu
     if st.button("🗑️ Resetuj rozmowę"):
         st.session_state.messages = []
         st.rerun()
 
-# --- 2. LOGIKA STANU (RESET PRZY ZMIANIE OPERATORA) ---
-
+# --- 2. LOGIKA STANU ---
 if "last_operator" not in st.session_state:
     st.session_state.last_operator = wybrany_operator
 
-# Jeśli operator się zmienił -> czyścimy czat
 if st.session_state.last_operator != wybrany_operator:
     st.session_state.messages = []
     st.session_state.last_operator = wybrany_operator
     st.rerun()
 
-# --- 3. BLOKADA STARTU ---
-# Jeśli operator jest pusty (index 0), zatrzymujemy skrypt tutaj.
 if not wybrany_operator:
     st.info("👈 Proszę wybrać operatora z menu po lewej stronie, aby rozpocząć pracę.")
     st.stop()
 
-# --- 4. KONFIGURACJA API ---
+# --- 3. KONFIGURACJA API ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except Exception as e:
@@ -95,8 +82,8 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- 5. PROMPT GŁÓWNY (PLACEHOLDER) ---
-
+# --- 4. PROMPT GŁÓWNY (BAZA) ---
+# Tutaj wklejasz swój ORYGINALNY prompt (bez zmian w sekcji 14)
 SYSTEM_INSTRUCTION_BASE = """
 # ASYSTENT „SZTURCHACZ” – PROMPT GŁÓWNY V4.6.18 — PATCH 06.01 (DUNAJEC_CIEPLY)
 
@@ -1865,17 +1852,38 @@ B) domyslny_tryb=kanal (odczyt wiadomości):
 - Pod nagłówkiem operator wkleja treść źródłową (bez komentarzy asystenta), możliwie pełną i z rozróżnieniem MY/KLIENT lub autorów.
 """
 
-# --- 6. WSTRZYKIWANIE PARAMETRÓW (DYNAMICZNE) ---
+# --- 5. NADPISANIE LOGIKI STARTU (HOTFIX) ---
+# To zostanie doklejone do prompta, aby wymusić obsługę trybów bez edycji bazy
+SECTION_14_OVERRIDE = """
+*** AKTUALIZACJA LOGIKI STARTOWEJ (NADPISUJE SEKCJĘ 14) ***
 
-# Pobranie daty systemowej
+14. START (ZMODYFIKOWANA LOGIKA TRYBÓW) (🟥)
+Gdy instancja jest uruchamiana bez WSADU sprawy (komenda „start”):
+1. Sprawdź parametr `domyslny_tryb` (na końcu promptu).
+2. Przywitaj `domyslny_operator`.
+3. Poproś o WSAD STARTOWY zależnie od trybu:
+
+   A) Jeśli `domyslny_tryb` == 'od_szturchacza' (Standard):
+      - Poproś o: "1. Tabelka z panelu Szturchacz", "2. Aktualna koperta".
+      - Zaznacz wyraźnie: "BEZ rolek (WA/mail/eBay) – o nie poproszę w razie potrzeby".
+
+   B) Jeśli `domyslny_tryb` IN {'WA', 'MAIL', 'FORUM'} (Tryb Kanałowy):
+      - Poproś o WSAD składający się z 3 elementów:
+        1. Tabelka z panelu Szturchacz.
+        2. Koperta.
+        3. ROLKA ŹRÓDŁOWA z kanału [domyslny_tryb].
+      - Poinstruuj operatora, aby rolkę wkleił pod nagłówkiem: ROLKA_START_[domyslny_tryb] (np. ROLKA_START_WA).
+
+4. Nie stosujesz formatu 0.4 (4 sekcje) i nie uruchamiasz analizy sprawy w tym kroku. Czekasz na wsad.
+"""
+
+# --- 6. WSTRZYKIWANIE PARAMETRÓW ---
 now = datetime.now()
-data_krotka = now.strftime("%d.%m")             # np. "06.01" (dla logiki tagów)
-data_pelna = now.strftime("%A, %d.%m.%Y")       # np. "Wtorek, 06.01.2026" (dla kontekstu modelu)
+data_krotka = now.strftime("%d.%m")
+data_pelna = now.strftime("%A, %d.%m.%Y")
 
-# Budowanie bloku parametrów
-# Tutaj wstrzykujemy rok 2026 (przez data_pelna) i wybrany tryb
 parametry_startowe = f"""
-# PARAMETRY STARTOWE (GENEROWANE AUTOMATYCZNIE PRZEZ PYTHON)
+# PARAMETRY STARTOWE (GENEROWANE AUTOMATYCZNIE)
 domyslny_operator={wybrany_operator}
 domyslna_data={data_krotka}
 kontekst_daty='{data_pelna}'
@@ -1884,8 +1892,8 @@ godziny_fedex='8-16:30'
 godziny_ups='8-18'
 """
 
-# Sklejenie prompta bazowego z parametrami
-FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
+# SKLEJANIE CAŁOŚCI: Baza + Nowa Logika Startu + Parametry
+FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n\n" + SECTION_14_OVERRIDE + "\n" + parametry_startowe
 
 # --- 7. INICJALIZACJA MODELU ---
 try:
@@ -1899,31 +1907,26 @@ except Exception as e:
     st.stop()
 
 # --- 8. INTERFEJS CZATU ---
-
 st.title(f"🤖 Szturchacz ({wybrany_operator})")
-# Wyświetlamy operatorowi, jaki tryb jest aktywny i jaka jest data systemowa
 st.caption(f"📅 Data: **{data_pelna}** | 📥 Tryb: **{wybrany_tryb_label}**")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Auto-start (wysłanie "start" przy pierwszym uruchomieniu)
+# Auto-start
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
             chat_init = model.start_chat(history=[])
-            # Wysyłamy "start", żeby prompt (sekcja 14) mógł zareagować na parametry
             response_init = chat_init.send_message("start")
             st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
         st.error(f"Błąd startu: {e}")
 
-# Wyświetlanie historii
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Obsługa wejścia użytkownika
 if prompt := st.chat_input("Wklej wsad..."):
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -1932,12 +1935,10 @@ if prompt := st.chat_input("Wklej wsad..."):
     with st.chat_message("model"):
         with st.spinner("Analizuję..."):
             try:
-                # Budowanie historii dla API
                 history_for_api = [{"role": "user", "parts": ["start"]}]
                 for m in st.session_state.messages:
                     history_for_api.append({"role": m["role"], "parts": [m["content"]]})
                 
-                # Uruchomienie czatu
                 chat = model.start_chat(history=history_for_api[:-1])
                 response = chat.send_message(prompt)
                 
