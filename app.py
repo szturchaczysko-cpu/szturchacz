@@ -42,7 +42,7 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 🔑 MENEDŻER KLUCZY (ROTATOR - NAPRAWIONY)
+# 🔑 MENEDŻER KLUCZY (ROTATOR)
 # ==========================================
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -52,21 +52,17 @@ except Exception:
     st.error("🚨 Błąd: Brak 'API_KEYS' w secrets.toml")
     st.stop()
 
-# Inicjalizacja indeksu klucza (tylko raz)
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
 def get_current_key():
-    """Pobiera klucz na podstawie aktualnego indeksu w sesji."""
     return API_KEYS[st.session_state.key_index]
 
 def rotate_key():
-    """Przesuwa indeks na następny i zwraca nowy indeks."""
     st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
     return st.session_state.key_index
 
-# --- KLUCZOWE: KONFIGURACJA NA STARCIE SKRYPTU ---
-# To gwarantuje, że po odświeżeniu/resecie używamy ostatniego dobrego klucza
+# Konfiguracja startowa
 genai.configure(api_key=get_current_key())
 
 # ==========================================
@@ -89,10 +85,8 @@ TRYBY_WSADU = {
 with st.sidebar:
     st.title("⚙️ Panel Sterowania")
     
-    # Info o modelu i kluczu (dla pewności, że się zmienił)
     st.caption(f"🧠 Model: `{MODEL_NAME}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
-    # Pokazujemy końcówkę klucza, żebyś widział czy się zmienił po błędzie
     current_k = get_current_key()
     st.caption(f"🔑 Klucz: ...{current_k[-4:]} (Index: {st.session_state.key_index + 1}/{len(API_KEYS)})")
     
@@ -113,7 +107,6 @@ with st.sidebar:
 
     st.markdown("---")
     if st.button("🗑️ Resetuj rozmowę"):
-        # Czyścimy tylko wiadomości, NIE czyścimy key_index!
         st.session_state.messages = []
         st.rerun()
 
@@ -130,18 +123,12 @@ if not wybrany_operator:
     st.info("👈 Wybierz operatora, aby rozpocząć.")
     st.stop()
 
-# --- 3. PROMPT (Z SECRETS) ---
+# --- 3. PROMPT (Z SECRETS + DEBUGGER) ---
 try:
     SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
 except Exception:
     st.error("🚨 Brak SYSTEM_PROMPT w secrets!")
     st.stop()
-
-
-    
-    with st.expander("🕵️ PODGLĄD PROMPTA (Tylko dla admina)"):
-        st.text(SYSTEM_INSTRUCTION_BASE)
-    # ----------------------------------------
 
 generation_config = {
     "temperature": TEMPERATURE,
@@ -175,7 +162,6 @@ FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n\n" + SECTION_14_OVERRIDE + "\n" + pa
 
 # --- 4. FUNKCJA TWORZENIA MODELU ---
 def create_model():
-    # Model zawsze pobierze aktualną konfigurację z genai.configure()
     return genai.GenerativeModel(
         model_name=MODEL_NAME,
         generation_config=generation_config,
@@ -185,6 +171,11 @@ def create_model():
 # --- 5. INTERFEJS CZATU ---
 st.title(f"🤖 Szturchacz ({wybrany_operator})")
 
+# --- DEBUGGER PROMPTA (TUTAJ SPRAWDZISZ FORMATOWANIE) ---
+with st.expander("🕵️ DEBUG: Podgląd Prompta (Sprawdź czy są entery i znaki #)"):
+    st.text(FULL_PROMPT)
+# -------------------------------------------------------
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -192,13 +183,12 @@ if "messages" not in st.session_state:
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
-            # Tutaj też używamy pętli retry, bo start też może dostać 429!
+            # Tworzymy model na świeżo
             model = create_model()
             chat_init = model.start_chat(history=[])
             response_init = chat_init.send_message("start")
             st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
-        # Jeśli start padnie, to trudno - user odświeży, ale zazwyczaj start jest lekki
         st.error(f"Błąd startu: {e}")
 
 for msg in st.session_state.messages:
@@ -240,11 +230,11 @@ if prompt := st.chat_input("Wklej wsad..."):
 
             while attempts < max_retries and not success:
                 try:
-                    # 1. WYMUSZENIE KONFIGURACJI (Kluczowe dla pętli!)
+                    # 1. WYMUSZENIE KONFIGURACJI
                     current_key = get_current_key()
                     genai.configure(api_key=current_key)
                     
-                    # 2. NOWY MODEL I CZAT (Kluczowe dla odświeżenia!)
+                    # 2. NOWY MODEL I CZAT
                     current_model = create_model()
                     chat = current_model.start_chat(history=history_for_api)
                     
@@ -264,11 +254,11 @@ if prompt := st.chat_input("Wklej wsad..."):
                         attempts += 1
                         old_key_index = st.session_state.key_index
                         
-                        # ZMIANA KLUCZA W SESJI (TRWAŁA)
+                        # ZMIANA KLUCZA
                         rotate_key()
                         
                         placeholder.warning(f"⚠️ Klucz nr {old_key_index + 1} wyczerpany. Przełączam na klucz nr {st.session_state.key_index + 1} i ponawiam...")
-                        time.sleep(1) # Oddech dla API
+                        time.sleep(1)
                     else:
                         st.error(f"Krytyczny błąd API: {e}")
                         break
