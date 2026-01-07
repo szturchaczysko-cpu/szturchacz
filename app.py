@@ -37,9 +37,9 @@ except Exception as e:
 
 # --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
 def parse_pz(text):
-    # <-- POPRAWKA 1: Bardziej elastyczny regex
+    # <-- POPRAWKA 2: Regex szuka teraz 'PZ' z cyframi, ignorując otoczenie
     if not text: return None
-    match = re.search(r'PZ:\s*(PZ\d+)', text)
+    match = re.search(r'(PZ\d+)', text)
     if match:
         return match.group(1)
     return None
@@ -57,7 +57,7 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
         pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA (POPRAWIONA)
+# 🔒 BRAMKA BEZPIECZEŃSTWA
 # ==========================================
 def check_password():
     if st.session_state.get("password_correct"):
@@ -72,7 +72,6 @@ def check_password():
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            # <-- POPRAWKA 2: Jawny zapis ciasteczka
             cookies['password_correct'] = 'true'
             cookies.save()
             st.rerun()
@@ -143,7 +142,7 @@ with st.sidebar:
         if not st.session_state.operator or not st.session_state.grupa:
             st.sidebar.error("Wybierz Operatora i Grupę!")
         else:
-            # Zapisujemy ustawienia w ciasteczkach PRZED uruchomieniem
+            # <-- POPRAWKA 1: Jawny zapis ciasteczek przy starcie
             cookies['operator'] = st.session_state.operator
             cookies['grupa'] = st.session_state.grupa
             cookies['selected_model_label'] = st.session_state.selected_model_label
@@ -261,7 +260,7 @@ domyslny_tryb={wybrany_tryb_kod}
                 
                 if success:
                     placeholder.markdown(response_text)
-                    st.session_state.messages.append({"role": "model", "content": response.text})
+                    st.session_state.messages.append({"role": "model", "content": response_text})
                     
                     if "COP#" in response_text and "C#" in response_text:
                         end_pz = parse_pz(response_text)
