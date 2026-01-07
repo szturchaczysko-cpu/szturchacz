@@ -76,7 +76,7 @@ if st.session_state.is_fallback:
 # 🚀 KONFIGURACJA MODELI
 # ==========================================
 MODEL_PRO = "gemini-3-pro-preview"
-MODEL_FLASH = "gemini-3-flash"
+MODEL_FLASH = "gemini-3-flash-preview"
 TEMPERATURE = 0.0
 
 # --- 1. PANEL BOCZNY ---
