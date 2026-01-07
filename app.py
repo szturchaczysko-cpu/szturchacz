@@ -9,20 +9,12 @@ import json
 import re
 import firebase_admin
 from firebase_admin import credentials, firestore
-from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
-
-# --- MENEDŻER CIASTECZEK ---
-cookies = EncryptedCookieManager(
-    password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
-)
-if not cookies.ready():
-    st.stop()
 
 # --- INICJALIZACJA BAZY DANYCH ---
 try:
@@ -35,40 +27,38 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (OSTATECZNA POPRAWKA) ---
+# --- FUNKCJE DO STATYSTYK (Z DEBUGGEREM) ---
 def parse_pz(text):
-    # <-- OSTATECZNA POPRAWKA: Regex, który musi zadziałać
     if not text: return None
-    # Szuka 'PZ' (ignorując wielkość liter), po którym może być spacja, potem dwukropek, potem znów spacja, i wreszcie 'PZ' z cyframi
+    # Bardziej elastyczny regex, ignoruje wielkość liter i spacje
     match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
 
-def log_session_and_transition(operator_name, start_pz, end_pz):
-    """Zapisuje statystyki w tle, bez powiadomień dla operatora."""
+def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
+    # Zapisujemy dane do debugowania w sesji, żeby je wyświetlić
+    st.session_state.debug_info = {
+        "start_pz_detected": start_pz,
+        "end_pz_detected": end_pz,
+        "full_response_snippet": response_text_for_debug[:500] # Pierwsze 500 znaków odpowiedzi
+    }
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
-        
         update_data = {"sessions_completed": firestore.Increment(1)}
-        
         if start_pz and end_pz:
             transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
             update_data[transition_key] = firestore.Increment(1)
-        
         doc_ref.set(update_data, merge=True)
     except Exception:
-        pass # Błędy zapisu statystyk są ciche
+        pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA
+# 🔒 BRAMKA BEZPIECZEŃSTWA (BEZ CIASTECZEK)
 # ==========================================
 def check_password():
     if st.session_state.get("password_correct"):
-        return True
-    if cookies.get("password_correct") == "true":
-        st.session_state.password_correct = True
         return True
     
     st.header("🔒 Dostęp chroniony (Szturchacz)")
@@ -77,8 +67,6 @@ def check_password():
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            cookies['password_correct'] = 'true'
-            cookies.save()
             st.rerun()
         else:
             st.error("😕 Błędne hasło")
@@ -92,12 +80,13 @@ if not check_password():
 # ==========================================
 if "key_index" not in st.session_state: st.session_state.key_index = 0
 if "is_fallback" not in st.session_state: st.session_state.is_fallback = False
-if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
-if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
-if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 3.0 Pro")
+if "operator" not in st.session_state: st.session_state.operator = ""
+if "grupa" not in st.session_state: st.session_state.grupa = ""
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = "Gemini 3.0 Pro"
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
+if "debug_info" not in st.session_state: st.session_state.debug_info = {}
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -116,7 +105,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -147,11 +136,6 @@ with st.sidebar:
         if not st.session_state.operator or not st.session_state.grupa:
             st.sidebar.error("Wybierz Operatora i Grupę!")
         else:
-            cookies['operator'] = st.session_state.operator
-            cookies['grupa'] = st.session_state.grupa
-            cookies['selected_model_label'] = st.session_state.selected_model_label
-            cookies.save()
-            
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.cache_handle = None
@@ -161,9 +145,12 @@ with st.sidebar:
 
     if st.button("🗑️ Resetuj Sesję"):
         st.session_state.clear()
-        cookies.clear()
-        cookies.save()
         st.rerun()
+        
+    # --- NOWA SEKCJA DEBUGOWANIA ---
+    with st.expander("🕵️ DEBUG STATYSTYK"):
+        st.write("Ostatnia próba logowania:")
+        st.json(st.session_state.debug_info)
 
 st.title(f"🤖 Szturchacz")
 
@@ -274,5 +261,6 @@ domyslny_tryb={wybrany_tryb_kod}
                         log_session_and_transition(
                             st.session_state.operator, 
                             st.session_state.current_start_pz, 
-                            end_pz
+                            end_pz,
+                            response_text # Przekazujemy tekst do debuggera
                         )
