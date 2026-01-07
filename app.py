@@ -35,26 +35,31 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
+# --- FUNKCJE DO STATYSTYK (OSTATECZNA POPRAWKA) ---
 def parse_pz(text):
-    # <-- POPRAWKA 2: Regex szuka teraz 'PZ' z cyframi, ignorując otoczenie
+    # <-- OSTATECZNA POPRAWKA: Regex, który musi zadziałać
     if not text: return None
-    match = re.search(r'(PZ\d+)', text)
+    # Szuka 'PZ' (ignorując wielkość liter), po którym może być spacja, potem dwukropek, potem znów spacja, i wreszcie 'PZ' z cyframi
+    match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
 
 def log_session_and_transition(operator_name, start_pz, end_pz):
+    """Zapisuje statystyki w tle, bez powiadomień dla operatora."""
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
+        
         update_data = {"sessions_completed": firestore.Increment(1)}
+        
         if start_pz and end_pz:
             transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
             update_data[transition_key] = firestore.Increment(1)
+        
         doc_ref.set(update_data, merge=True)
     except Exception:
-        pass
+        pass # Błędy zapisu statystyk są ciche
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -142,7 +147,6 @@ with st.sidebar:
         if not st.session_state.operator or not st.session_state.grupa:
             st.sidebar.error("Wybierz Operatora i Grupę!")
         else:
-            # <-- POPRAWKA 1: Jawny zapis ciasteczek przy starcie
             cookies['operator'] = st.session_state.operator
             cookies['grupa'] = st.session_state.grupa
             cookies['selected_model_label'] = st.session_state.selected_model_label
