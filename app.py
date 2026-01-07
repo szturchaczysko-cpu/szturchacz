@@ -9,6 +9,7 @@ import json
 import re
 import firebase_admin
 from firebase_admin import credentials, firestore
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
@@ -24,45 +25,58 @@ try:
         firebase_admin.initialize_app(creds)
     db = firestore.client()
 except Exception as e:
-    st.error(f"Błąd połączenia z bazą danych statystyk: {e}")
+    st.error(f"Błąd połączenia z bazą danych: {e}")
+    st.stop()
+
+# --- MENEDŻER CIASTECZEK (DO ZAPAMIĘTYWANIA) ---
+# Używamy klucza z secrets do szyfrowania ciasteczek
+cookies = EncryptedCookieManager(
+    password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
+)
+if not cookies.ready():
     st.stop()
 
 # --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
 def parse_pz(text):
-    """Wyszukuje kod PZ w formacie 'PZ: PZx'."""
+    """Wyszukuje kod PZ w formacie 'COP# PZ: PZx'."""
     if not text: return None
-    match = re.search(r'PZ: (PZ\d+)', text)
+    match = re.search(r'COP# PZ: (PZ\d+)', text)
     if match:
         return match.group(1)
     return None
 
 def log_session_and_transition(operator_name, start_pz, end_pz):
-    """Zapisuje statystyki w tle, bez powiadomień dla operatora."""
+    """Zapisuje statystyki w tle."""
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
-        
         update_data = {"sessions_completed": firestore.Increment(1)}
-        
         if start_pz and end_pz:
             transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
             update_data[transition_key] = firestore.Increment(1)
-        
         doc_ref.set(update_data, merge=True)
     except Exception:
-        pass # Ignorujemy błędy zapisu statystyk
+        pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA
+# 🔒 BRAMKA BEZPIECZEŃSTWA (Z CIASTECZKAMI)
 # ==========================================
 def check_password():
     if st.session_state.get("password_correct"):
         return True
+    
+    # Sprawdzamy, czy hasło jest już w ciasteczku
+    if cookies.get("password_correct") == "true":
+        st.session_state.password_correct = True
+        return True
+
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
-            st.session_state["password_correct"] = True
+            st.session_state.password_correct = True
+            # Zapisujemy w ciasteczku na 7 dni
+            cookies.set("password_correct", "true", expires_at=datetime.now() + timedelta(days=7))
             st.rerun()
         else:
             st.error("😕 Błędne hasło")
@@ -74,13 +88,14 @@ if not check_password():
 # ==========================================
 # 🔑 INICJALIZACJA STANU APLIKACJI
 # ==========================================
+# Inicjalizujemy stan z ciasteczek, jeśli istnieją
 if "key_index" not in st.session_state: st.session_state.key_index = 0
 if "is_fallback" not in st.session_state: st.session_state.is_fallback = False
-if "operator" not in st.session_state: st.session_state.operator = ""
-if "grupa" not in st.session_state: st.session_state.grupa = ""
+if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
+if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 3.0 Pro")
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = "Gemini 3.0 Pro"
 if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
 
 try:
@@ -100,7 +115,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -110,16 +125,23 @@ with st.sidebar:
         st.error("Limity 3.0 Pro wyczerpane! Działam na 1.5 Pro.")
     
     st.title("⚙️ Panel Sterowania")
-    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    
+    # --- ZMIANA: Używamy `on_change` do zapisu w ciasteczkach ---
+    def save_settings_to_cookies():
+        cookies.set("operator", st.session_state.operator)
+        cookies.set("grupa", st.session_state.grupa)
+        cookies.set("selected_model_label", st.session_state.selected_model_label)
+
+    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label", on_change=save_settings_to_cookies)
     active_model_name = MODEL_MAP[st.session_state.selected_model_label]
     st.caption(f"🧠 Model: `{active_model_name}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
     st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
     st.markdown("---")
     st.subheader("👤 Operator")
-    st.selectbox("Kto obsługuje?", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator")
+    st.selectbox("Kto obsługuje?", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator", on_change=save_settings_to_cookies)
     st.subheader("🌐 Grupa Operatorska")
-    st.selectbox("Do której grupy należysz?", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
+    st.selectbox("Do której grupy należysz?", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa", on_change=save_settings_to_cookies)
     st.subheader("📥 Tryb Startowy")
     TRYBY_WSADU = {"Standard": "od_szturchacza", "WA": "WA", "E-mail": "MAIL", "Forum/Inne": "FORUM"}
     wybrany_tryb_label = st.selectbox("Typ pierwszego wsadu?", list(TRYBY_WSADU.keys()), key="tryb_label")
@@ -139,6 +161,7 @@ with st.sidebar:
 
     if st.button("🗑️ Resetuj Sesję"):
         st.session_state.clear()
+        cookies.clear()
         st.rerun()
 
 st.title(f"🤖 Szturchacz")
