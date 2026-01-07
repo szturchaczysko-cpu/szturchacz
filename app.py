@@ -17,13 +17,11 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- MENEDŻER CIASTECZEK (POPRAWIONA INICJALIZACJA) ---
-# Inicjujemy go na samym początku, przed wszystkim innym
+# --- MENEDŻER CIASTECZEK ---
 cookies = EncryptedCookieManager(
     password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
 )
 if not cookies.ready():
-    # Wstrzymujemy aplikację, dopóki menedżer ciasteczek nie będzie gotowy
     st.stop()
 
 # --- INICJALIZACJA BAZY DANYCH ---
@@ -58,7 +56,7 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
         pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA (Z CIASTECZKAMI)
+# 🔒 BRAMKA BEZPIECZEŃSTWA
 # ==========================================
 def check_password():
     if st.session_state.get("password_correct"):
@@ -71,7 +69,7 @@ def check_password():
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            cookies["password_correct"] = "true" # Używamy składni słownikowej
+            cookies["password_correct"] = "true"
             cookies.save()
             st.rerun()
         else:
@@ -269,4 +267,4 @@ domyslny_tryb={wybrany_tryb_kod}
                             st.session_state.operator, 
                             st.session_state.current_start_pz, 
                             end_pz
-                        )```
+                        )
