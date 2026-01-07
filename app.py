@@ -27,21 +27,19 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (Z DEBUGGEREM) ---
+# --- FUNKCJE DO STATYSTYK ---
 def parse_pz(text):
     if not text: return None
-    # Bardziej elastyczny regex, ignoruje wielkość liter i spacje
     match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
 
 def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
-    # Zapisujemy dane do debugowania w sesji, żeby je wyświetlić
     st.session_state.debug_info = {
         "start_pz_detected": start_pz,
         "end_pz_detected": end_pz,
-        "full_response_snippet": response_text_for_debug[:500] # Pierwsze 500 znaków odpowiedzi
+        "full_response_snippet": response_text_for_debug[:500]
     }
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
@@ -55,21 +53,17 @@ def log_session_and_transition(operator_name, start_pz, end_pz, response_text_fo
         pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA (BEZ CIASTECZEK)
+# 🔒 BRAMKA BEZPIECZEŃSTWA
 # ==========================================
 def check_password():
     if st.session_state.get("password_correct"):
         return True
-    
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
-    
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
             st.rerun()
-        else:
-            st.error("😕 Błędne hasło")
     return False
 
 if not check_password():
@@ -147,7 +141,6 @@ with st.sidebar:
         st.session_state.clear()
         st.rerun()
         
-    # --- NOWA SEKCJA DEBUGOWANIA ---
     with st.expander("🕵️ DEBUG STATYSTYK"):
         st.write("Ostatnia próba logowania:")
         st.json(st.session_state.debug_info)
@@ -253,7 +246,9 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    if "COP#" in response_text and "C#" in response_text:
+                    # --- OSTATECZNA POPRAWKA TRIGGERA ---
+                    # Używamy regex do sprawdzenia, czy oba tagi istnieją
+                    if re.search(r'COP#', response_text) and re.search(r'C#', response_text):
                         end_pz = parse_pz(response_text)
                         if not end_pz:
                             end_pz = "PZ_END"
@@ -262,5 +257,5 @@ domyslny_tryb={wybrany_tryb_kod}
                             st.session_state.operator, 
                             st.session_state.current_start_pz, 
                             end_pz,
-                            response_text # Przekazujemy tekst do debuggera
+                            response_text
                         )
