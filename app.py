@@ -39,7 +39,7 @@ if "operator" not in st.session_state: st.session_state.operator = ""
 if "grupa" not in st.session_state: st.session_state.grupa = ""
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "selected_model" not in st.session_state: st.session_state.selected_model = "Gemini 3.0 Pro"
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = "Gemini 3.0 Pro"
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -57,9 +57,10 @@ if st.session_state.is_fallback:
 # ==========================================
 # 🚀 APLIKACJA
 # ==========================================
+# --- POPRAWIONE NAZWY MODELI ---
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro-latest"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro" # Usunięto "-latest"
 }
 TEMPERATURE = 0.0
 
@@ -71,9 +72,8 @@ with st.sidebar:
     
     st.title("⚙️ Panel Sterowania")
     
-    # --- NOWY WYBÓR MODELU ---
-    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model")
-    active_model_name = MODEL_MAP[st.session_state.selected_model]
+    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    active_model_name = MODEL_MAP[st.session_state.selected_model_label]
     
     st.caption(f"🧠 Model: `{active_model_name}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
@@ -86,9 +86,16 @@ with st.sidebar:
     st.subheader("🌐 Grupa Operatorska")
     st.selectbox("Do której grupy należysz?", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
 
+    # --- PRZYWRÓCONE TRYBY WSADU ---
     st.subheader("📥 Tryb Startowy")
-    wybrany_tryb_label = st.selectbox("Typ pierwszego wsadu?", {"Standard": "obecny", "Kanał": "kanal"}, key="tryb_label")
-    wybrany_tryb_kod = {"Standard": "obecny", "Kanał": "kanal"}[st.session_state.tryb_label]
+    TRYBY_WSADU = {
+        "Standard (Panel + Koperta)": "od_szturchacza",
+        "WhatsApp (Rolka + Panel)": "WA",
+        "E-mail (Rolka + Panel)": "MAIL",
+        "Forum/Inne (Wpis + Panel)": "FORUM"
+    }
+    wybrany_tryb_label = st.selectbox("Typ pierwszego wsadu?", list(TRYBY_WSADU.keys()), key="tryb_label")
+    wybrany_tryb_kod = TRYBY_WSADU[st.session_state.tryb_label]
     
     st.markdown("---")
     
@@ -97,8 +104,10 @@ with st.sidebar:
             st.sidebar.error("Wybierz Operatora i Grupę!")
         else:
             st.session_state.messages = []
-            st.session_state.chat_started = True # Od razu ustawiamy, że startujemy
-            st.session_state.is_fallback = False # Resetujemy dinozaura przy starcie
+            st.session_state.chat_started = True
+            # Resetujemy dinozaura tylko jeśli użytkownik ręcznie wybrał 3.0 Pro
+            if st.session_state.selected_model_label == "Gemini 3.0 Pro":
+                st.session_state.is_fallback = False
             st.rerun()
 
     if st.button("🗑️ Resetuj Sesję"):
@@ -111,7 +120,6 @@ st.title(f"🤖 Szturchacz")
 if not st.session_state.chat_started:
     st.info("👈 Wybierz parametry w panelu bocznym i kliknij **'Uruchom / Przeładuj Czat'**.")
 else:
-    # --- PROMPT I KONFIGURACJA MODELU ---
     try:
         SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
     except:
@@ -138,7 +146,7 @@ domyslny_tryb={wybrany_tryb_kod}
     if len(st.session_state.messages) == 0:
         with st.spinner("Inicjalizacja systemu..."):
             try:
-                model_to_start = MODEL_MAP[st.session_state.selected_model]
+                model_to_start = MODEL_MAP[st.session_state.selected_model_label]
                 m = create_model(model_to_start)
                 response = m.start_chat().send_message("start")
                 st.session_state.messages.append({"role": "model", "content": response.text})
@@ -165,10 +173,9 @@ domyslny_tryb={wybrany_tryb_kod}
                 success = False
                 
                 # Ustawiamy model docelowy i awaryjny
-                target_model_name = MODEL_MAP[st.session_state.selected_model]
+                target_model_name = MODEL_MAP[st.session_state.selected_model_label]
                 fallback_model_name = MODEL_MAP["Gemini 1.5 Pro (2.5)"]
 
-                # Jeśli już jesteśmy w trybie awaryjnym, od razu używamy 1.5 Pro
                 if st.session_state.is_fallback:
                     target_model_name = fallback_model_name
 
@@ -188,14 +195,13 @@ domyslny_tryb={wybrany_tryb_kod}
                                 placeholder.warning(f"Zmiana klucza ({attempts}/{max_retries})...")
                                 time.sleep(1)
                             else:
-                                # Jeśli skończyły się klucze dla 3.0 Pro, przechodzimy na 1.5 Pro
+                                # Przechodzimy na 1.5 Pro tylko jeśli pracowaliśmy na 3.0 Pro
                                 if target_model_name == MODEL_MAP["Gemini 3.0 Pro"] and not st.session_state.is_fallback:
                                     st.session_state.is_fallback = True
                                     placeholder.error("⚠️ Limity 3.0 Pro wyczerpane! Przechodzę w tryb DINOZAURA (1.5 Pro)...")
                                     time.sleep(2)
                                     st.rerun()
                                 else:
-                                    # Jeśli padły limity nawet dla 1.5 Pro
                                     st.error("❌ Wszystkie klucze i modele awaryjne wyczerpane!")
                                     break
                         else:
