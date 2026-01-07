@@ -59,7 +59,6 @@ def rotate_key():
     st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
     return st.session_state.key_index
 
-# --- 🦖 CSS DLA CZERWONEGO PANELU ---
 if st.session_state.is_fallback:
     st.markdown("""
         <style>
@@ -82,31 +81,31 @@ TEMPERATURE = 0.0
 # --- 1. PANEL BOCZNY ---
 DOSTEPNI_OPERATORZY = ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
 TRYBY_WSADU = {
-    "Standard (Panel + Koperta)": "od_szturchacza",
-    "WhatsApp (Rolka + Panel)": "WA",
-    "E-mail (Rolka + Panel)": "MAIL",
-    "Forum/Inne (Wpis + Panel)": "FORUM"
+    "Standard": "obecny",
+    "Kanał (WA/Mail/...)": "kanal"
 }
+GRUPY_OPERATORSKIE = ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
 
 with st.sidebar:
-    # Ikona dinozaura tylko w trybie awaryjnym
     if st.session_state.is_fallback:
-        st.markdown("<h1 style='text-align: center; font-size: 80px; margin-bottom: 0;'>🦖😲</h1>", unsafe_allow_html=True)
-        st.markdown("<p style='text-align: center; font-weight: bold;'>OJOJOJ! DINOZAUR!</p>", unsafe_allow_html=True)
-        st.error("Limity PRO wyczerpane! Działam na darmowym FLASH.")
+        st.markdown("<h1 style='text-align: center; font-size: 80px;'>🦖😲</h1>", unsafe_allow_html=True)
+        st.error("Limity PRO wyczerpane! Działam na FLASH.")
         st.markdown("---")
 
     st.title("⚙️ Panel Sterowania")
     st.caption(f"🧠 Model: `{MODEL_FLASH if st.session_state.is_fallback else MODEL_PRO}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
     st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
-    
     st.markdown("---")
+
     st.subheader("👤 Operator")
     wybrany_operator = st.selectbox("Kto obsługuje?", DOSTEPNI_OPERATORZY, index=0)
 
-    st.subheader("📥 Tryb Wsadu")
-    wybrany_tryb_label = st.selectbox("Skąd pochodzi wsad?", list(TRYBY_WSADU.keys()), index=0)
+    st.subheader("🌐 Grupa Operatorska")
+    wybrana_grupa = st.selectbox("Do której grupy należysz?", GRUPY_OPERATORSKIE, index=0)
+
+    st.subheader("📥 Tryb Startowy")
+    wybrany_tryb_label = st.selectbox("Jakiego typu jest pierwszy wsad?", list(TRYBY_WSADU.keys()), index=0)
     wybrany_tryb_kod = TRYBY_WSADU[wybrany_tryb_label]
     
     st.markdown("---")
@@ -121,17 +120,17 @@ with st.sidebar:
         st.session_state.is_fallback = False
         st.rerun()
 
-# --- 2. LOGIKA STANU ---
-if "last_operator" not in st.session_state:
-    st.session_state.last_operator = wybrany_operator
+# --- 2. LOGIKA STANU I WALIDACJA ---
+if "last_config" not in st.session_state:
+    st.session_state.last_config = (wybrany_operator, wybrana_grupa)
 
-if st.session_state.last_operator != wybrany_operator:
+if st.session_state.last_config != (wybrany_operator, wybrana_grupa):
     st.session_state.messages = []
-    st.session_state.last_operator = wybrany_operator
+    st.session_state.last_config = (wybrany_operator, wybrana_grupa)
     st.rerun()
 
-if not wybrany_operator:
-    st.info("👈 Wybierz operatora, aby rozpocząć.")
+if not wybrany_operator or not wybrana_grupa:
+    st.info("👈 Proszę wybrać **Operatora** oraz **Grupę Operatorską**, aby rozpocząć.")
     st.stop()
 
 # --- 3. PROMPT I PARAMETRY ---
@@ -141,39 +140,30 @@ except Exception:
     st.error("🚨 Brak SYSTEM_PROMPT w secrets!")
     st.stop()
 
-SECTION_14_OVERRIDE = """
-*** AKTUALIZACJA LOGIKI STARTOWEJ (NADPISUJE SEKCJĘ 14) ***
-14. START (ZMODYFIKOWANA LOGIKA TRYBÓW)
-Gdy instancja jest uruchamiana bez WSADU sprawy (komenda „start”):
-1. Sprawdź parametr `domyslny_tryb`.
-2. Przywitaj `domyslny_operator`.
-3. Poproś o WSAD STARTOWY zależnie od trybu.
-"""
-
 now = datetime.now()
 parametry_startowe = f"""
 # PARAMETRY STARTOWE
 domyslny_operator={wybrany_operator}
 domyslna_data={now.strftime("%d.%m")}
-kontekst_daty='{now.strftime("%A, %d.%m.%Y")}'
+Grupa_Operatorska={wybrana_grupa}
 domyslny_tryb={wybrany_tryb_kod}
 godziny_fedex='8-16:30'
 godziny_ups='8-18'
 """
 
-FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n\n" + SECTION_14_OVERRIDE + "\n" + parametry_startowe
+FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
 
 # --- 4. FUNKCJA TWORZENIA MODELU ---
 def create_model(model_name):
     genai.configure(api_key=get_current_key())
     return genai.GenerativeModel(
         model_name=model_name,
-        generation_config={"temperature": TEMPERATURE, "top_p": 0.95, "max_output_tokens": 8192},
+        generation_config={"temperature": TEMPERATURE, "max_output_tokens": 8192},
         system_instruction=FULL_PROMPT
     )
 
 # --- 5. INTERFEJS CZATU ---
-st.title(f"🤖 Szturchacz ({wybrany_operator})")
+st.title(f"🤖 Szturchacz ({wybrany_operator} / {wybrana_grupa})")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -187,13 +177,16 @@ if len(st.session_state.messages) == 0:
             response_init = chat_init.send_message("start")
             st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
+        if "429" in str(e) or "Quota" in str(e):
+             st.session_state.is_fallback = True
+             st.rerun()
         st.error(f"Błąd startu: {e}")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- 6. GŁÓWNA PĘTLA (ROTACJA + DINO FALLBACK) ---
+# --- 6. GŁÓWNA PĘTLA ---
 if prompt := st.chat_input("Wklej wsad..."):
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -212,13 +205,10 @@ if prompt := st.chat_input("Wklej wsad..."):
             
             content_to_send = [prompt, Image.open(uploaded_file)] if uploaded_file else prompt
 
-            # --- LOGIKA RETRY (ROTACJA KLUCZY PRO) ---
             max_retries = len(API_KEYS)
             attempts = 0
             success = False
             response_text = ""
-
-            # Wybieramy model (jeśli już jesteśmy w trybie dinozaura, omijamy Pro)
             target_model = MODEL_FLASH if st.session_state.is_fallback else MODEL_PRO
 
             while attempts < max_retries and not success:
@@ -238,16 +228,13 @@ if prompt := st.chat_input("Wklej wsad..."):
                             placeholder.warning(f"Zmiana klucza ({attempts}/{max_retries})...")
                             time.sleep(1)
                         else:
-                            # WYCZERPANO KLUCZE PRO -> TRYB DINOZAURA
                             if not st.session_state.is_fallback:
                                 st.session_state.is_fallback = True
-                                target_model = MODEL_FLASH
-                                attempts = 0 # Resetujemy próby dla modelu Flash
-                                placeholder.error("⚠️ Przechodzę w tryb awaryjny (Dinozaur)! Sekunda...")
+                                placeholder.error("⚠️ Przechodzę w tryb DINOZAURA (Flash)...")
                                 time.sleep(2)
                                 st.rerun() 
                     else:
-                        st.error(f"Krytyczny błąd: {e}")
+                        st.error(f"Błąd: {e}")
                         break
             
             if success:
