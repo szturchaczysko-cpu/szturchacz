@@ -47,10 +47,18 @@ except Exception:
     st.error("🚨 Błąd: Brak 'API_KEYS' w secrets.toml")
     st.stop()
 
+# --- KLUCZOWE ZMIANY W SESSION_STATE ---
+# Inicjalizujemy stan tylko raz, na samym początku sesji
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 if "is_fallback" not in st.session_state:
     st.session_state.is_fallback = False
+if "operator" not in st.session_state:
+    st.session_state.operator = ""
+if "grupa" not in st.session_state:
+    st.session_state.grupa = ""
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
 def get_current_key():
     return API_KEYS[st.session_state.key_index]
@@ -72,18 +80,15 @@ if st.session_state.is_fallback:
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 🚀 KONFIGURACJA MODELI
+# 🚀 APLIKACJA
 # ==========================================
 MODEL_PRO = "gemini-3-pro-preview"
-MODEL_FLASH = "gemini-2.5-pro"
+MODEL_FLASH = "gemini-3-flash-preview"
 TEMPERATURE = 0.0
 
 # --- 1. PANEL BOCZNY ---
 DOSTEPNI_OPERATORZY = ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"]
-TRYBY_WSADU = {
-    "Standard": "obecny",
-    "Kanał (WA/Mail/...)": "kanal"
-}
+TRYBY_WSADU = {"Standard": "obecny", "Kanał (WA/Mail/...)": "kanal"}
 GRUPY_OPERATORSKIE = ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"]
 
 with st.sidebar:
@@ -98,11 +103,12 @@ with st.sidebar:
     st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
     st.markdown("---")
 
+    # --- ZMIANA: Powiązanie selectboxów z session_state za pomocą parametru `key` ---
     st.subheader("👤 Operator")
-    wybrany_operator = st.selectbox("Kto obsługuje?", DOSTEPNI_OPERATORZY, index=0)
+    st.selectbox("Kto obsługuje?", DOSTEPNI_OPERATORZY, key="operator")
 
     st.subheader("🌐 Grupa Operatorska")
-    wybrana_grupa = st.selectbox("Do której grupy należysz?", GRUPY_OPERATORSKIE, index=0)
+    st.selectbox("Do której grupy należysz?", GRUPY_OPERATORSKIE, key="grupa")
 
     st.subheader("📥 Tryb Startowy")
     wybrany_tryb_label = st.selectbox("Jakiego typu jest pierwszy wsad?", list(TRYBY_WSADU.keys()), index=0)
@@ -121,20 +127,18 @@ with st.sidebar:
         st.rerun()
 
 # --- 2. LOGIKA STANU I WALIDACJA (NAPRAWIONA) ---
+# Sprawdzamy, czy stary wybór jest inny niż nowy, żeby zresetować czat
 if "last_config" not in st.session_state:
-    st.session_state.last_config = (wybrany_operator, wybrana_grupa)
+    st.session_state.last_config = (st.session_state.operator, st.session_state.grupa)
 
-# Sprawdzamy, czy konfiguracja się zmieniła (np. inny operator)
-# i resetujemy rozmowę, ALE JUŻ BEZ st.rerun(), które powodowało problem.
-if st.session_state.last_config != (wybrany_operator, wybrana_grupa):
+if st.session_state.last_config != (st.session_state.operator, st.session_state.grupa):
     st.session_state.messages = []
-    st.session_state.last_config = (wybrany_operator, wybrana_grupa)
-    # st.rerun()  <-- USUNIĘCIE TEJ LINII NAPRAWIA BŁĄD
+    st.session_state.last_config = (st.session_state.operator, st.session_state.grupa)
 
 # Blokada, jeśli którekolwiek pole jest puste.
-if not wybrany_operator or not wybrana_grupa:
+if not st.session_state.operator or not st.session_state.grupa:
     st.info("👈 Proszę wybrać **Operatora** oraz **Grupę Operatorską**, aby rozpocząć.")
-    st.stop() # Zatrzymuje skrypt, dopóki oba pola nie będą wybrane
+    st.stop()
 
 # --- 3. PROMPT I PARAMETRY ---
 try:
@@ -146,9 +150,9 @@ except Exception:
 now = datetime.now()
 parametry_startowe = f"""
 # PARAMETRY STARTOWE
-domyslny_operator={wybrany_operator}
+domyslny_operator={st.session_state.operator}
 domyslna_data={now.strftime("%d.%m")}
-Grupa_Operatorska={wybrana_grupa}
+Grupa_Operatorska={st.session_state.grupa}
 domyslny_tryb={wybrany_tryb_kod}
 godziny_fedex='8-16:30'
 godziny_ups='8-18'
@@ -166,12 +170,9 @@ def create_model(model_name):
     )
 
 # --- 5. INTERFEJS CZATU ---
-st.title(f"🤖 Szturchacz ({wybrany_operator} / {wybrana_grupa})")
+st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Autostart (wykona się, gdy skrypt nie zostanie zatrzymany przez st.stop() w kroku 2)
+# Autostart
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
@@ -191,6 +192,7 @@ for msg in st.session_state.messages:
 
 # --- 6. GŁÓWNA PĘTLA ---
 if prompt := st.chat_input("Wklej wsad..."):
+    # (reszta pętli bez zmian - kopiuję dla kompletności)
     with st.chat_message("user"):
         st.markdown(prompt)
         if uploaded_file:
