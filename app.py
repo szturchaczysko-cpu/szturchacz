@@ -17,7 +17,7 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- MENEDŻER CIASTECZEK ---
+# --- MENEDŻER CIASTECZEK (POPRAWIONA INICJALIZACJA) ---
 cookies = EncryptedCookieManager(
     password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
 )
@@ -35,10 +35,11 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK ---
+# --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
 def parse_pz(text):
+    # <-- POPRAWKA 2: Regex jest teraz mniej restrykcyjny i znajdzie 'PZ: PZx'
     if not text: return None
-    match = re.search(r'COP# PZ: (PZ\d+)', text)
+    match = re.search(r'PZ: (PZ\d+)', text)
     if match:
         return match.group(1)
     return None
@@ -56,7 +57,7 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
         pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA
+# 🔒 BRAMKA BEZPIECZEŃSTWA (POPRAWIONA)
 # ==========================================
 def check_password():
     if st.session_state.get("password_correct"):
@@ -64,12 +65,15 @@ def check_password():
     if cookies.get("password_correct") == "true":
         st.session_state.password_correct = True
         return True
+    
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
+    
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            cookies["password_correct"] = "true"
+            # <-- POPRAWKA 1: Używamy składni słownikowej i jawnego zapisu
+            cookies['password_correct'] = 'true'
             cookies.save()
             st.rerun()
         else:
@@ -108,7 +112,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -120,9 +124,9 @@ with st.sidebar:
     st.title("⚙️ Panel Sterowania")
     
     def save_settings_to_cookies():
-        cookies["operator"] = st.session_state.operator
-        cookies["grupa"] = st.session_state.grupa
-        cookies["selected_model_label"] = st.session_state.selected_model_label
+        cookies['operator'] = st.session_state.operator
+        cookies['grupa'] = st.session_state.grupa
+        cookies['selected_model_label'] = st.session_state.selected_model_label
         cookies.save()
 
     st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label", on_change=save_settings_to_cookies)
@@ -138,7 +142,7 @@ with st.sidebar:
     st.subheader("📥 Tryb Startowy")
     TRYBY_WSADU = {"Standard": "od_szturchacza", "WA": "WA", "E-mail": "MAIL", "Forum/Inne": "FORUM"}
     wybrany_tryb_label = st.selectbox("Typ pierwszego wsadu?", list(TRYBY_WSADU.keys()), key="tryb_label")
-    wybrany_tryb_kod = TRYBY_WSADU[st.session_state.tryb_label]
+    wybrany_tryb_kod = TRYBY_WSADU.get(st.session_state.tryb_label, "od_szturchacza")
     st.markdown("---")
     
     if st.button("🚀 Uruchom / Przeładuj Czat", type="primary"):
@@ -155,6 +159,7 @@ with st.sidebar:
     if st.button("🗑️ Resetuj Sesję"):
         st.session_state.clear()
         cookies.clear()
+        cookies.save()
         st.rerun()
 
 st.title(f"🤖 Szturchacz")
