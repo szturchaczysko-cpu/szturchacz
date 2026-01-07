@@ -62,7 +62,7 @@ def rotate_key():
     st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
     return st.session_state.key_index
 
-# Konfiguracja startowa
+# Konfiguracja startowa (ważne dla odświeżania strony)
 genai.configure(api_key=get_current_key())
 
 # ==========================================
@@ -123,7 +123,7 @@ if not wybrany_operator:
     st.info("👈 Wybierz operatora, aby rozpocząć.")
     st.stop()
 
-# --- 3. PROMPT (Z SECRETS + DEBUGGER) ---
+# --- 3. PROMPT (Z SECRETS) ---
 try:
     SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
 except Exception:
@@ -171,11 +171,6 @@ def create_model():
 # --- 5. INTERFEJS CZATU ---
 st.title(f"🤖 Szturchacz ({wybrany_operator})")
 
-# --- DEBUGGER PROMPTA (TUTAJ SPRAWDZISZ FORMATOWANIE) ---
-with st.expander("🕵️ DEBUG: Podgląd Prompta (Sprawdź czy są entery i znaki #)"):
-    st.text(FULL_PROMPT)
-# -------------------------------------------------------
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -183,7 +178,6 @@ if "messages" not in st.session_state:
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
-            # Tworzymy model na świeżo
             model = create_model()
             chat_init = model.start_chat(history=[])
             response_init = chat_init.send_message("start")
