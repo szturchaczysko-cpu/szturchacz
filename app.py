@@ -17,28 +17,27 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- INICJALIZACJA BAZY DANYCH ---
+# --- INICJALIZACJA BAZY DANYCH (POPRAWIONA) ---
 try:
+    # Sprawdzamy, czy aplikacja nie jest już połączona, żeby unikać błędów przy odświeżaniu
     if not firebase_admin._apps:
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
         firebase_admin.initialize_app(creds)
     db = firestore.client()
 except Exception as e:
-    st.error(f"Błąd połączenia z bazą danych: {e}")
+    st.error(f"Błąd połączenia z bazą danych statystyk: {e}")
     st.stop()
 
-# --- MENEDŻER CIASTECZEK (DO ZAPAMIĘTYWANIA) ---
-# Używamy klucza z secrets do szyfrowania ciasteczek
+# --- MENEDŻER CIASTECZEK ---
 cookies = EncryptedCookieManager(
     password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
 )
 if not cookies.ready():
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
+# --- FUNKCJE DO STATYSTYK ---
 def parse_pz(text):
-    """Wyszukuje kod PZ w formacie 'COP# PZ: PZx'."""
     if not text: return None
     match = re.search(r'COP# PZ: (PZ\d+)', text)
     if match:
@@ -46,7 +45,6 @@ def parse_pz(text):
     return None
 
 def log_session_and_transition(operator_name, start_pz, end_pz):
-    """Zapisuje statystyki w tle."""
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
@@ -64,18 +62,14 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
 def check_password():
     if st.session_state.get("password_correct"):
         return True
-    
-    # Sprawdzamy, czy hasło jest już w ciasteczku
     if cookies.get("password_correct") == "true":
         st.session_state.password_correct = True
         return True
-
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            # Zapisujemy w ciasteczku na 7 dni
             cookies.set("password_correct", "true", expires_at=datetime.now() + timedelta(days=7))
             st.rerun()
         else:
@@ -88,7 +82,6 @@ if not check_password():
 # ==========================================
 # 🔑 INICJALIZACJA STANU APLIKACJI
 # ==========================================
-# Inicjalizujemy stan z ciasteczek, jeśli istnieją
 if "key_index" not in st.session_state: st.session_state.key_index = 0
 if "is_fallback" not in st.session_state: st.session_state.is_fallback = False
 if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
@@ -126,7 +119,6 @@ with st.sidebar:
     
     st.title("⚙️ Panel Sterowania")
     
-    # --- ZMIANA: Używamy `on_change` do zapisu w ciasteczkach ---
     def save_settings_to_cookies():
         cookies.set("operator", st.session_state.operator)
         cookies.set("grupa", st.session_state.grupa)
