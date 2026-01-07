@@ -137,6 +137,12 @@ except Exception:
     st.error("🚨 Brak SYSTEM_PROMPT w secrets!")
     st.stop()
 
+
+    
+    with st.expander("🕵️ PODGLĄD PROMPTA (Tylko dla admina)"):
+        st.text(SYSTEM_INSTRUCTION_BASE)
+    # ----------------------------------------
+
 generation_config = {
     "temperature": TEMPERATURE,
     "top_p": 0.95,
