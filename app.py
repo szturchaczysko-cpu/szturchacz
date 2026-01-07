@@ -27,21 +27,38 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (OSTATECZNA POPRAWKA) ---
+# --- FUNKCJE DO STATYSTYK (Z INTELIGENTNYM LICZNIKIEM) ---
 def parse_pz(text):
-    # <-- OSTATECZNA POPRAWKA: Najprostszy możliwy regex
     if not text: return None
-    match = re.search(r'(PZ\d+)', text)
+    match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
     if match:
         return match.group(1)
     return None
 
-def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
+def get_pz_value(pz_string):
+    """Konwertuje string 'PZx' na liczbę, obsługując specjalne przypadki."""
+    if pz_string == "PZ_START":
+        return -1
+    if pz_string == "PZ_END":
+        return 999 # Duża liczba oznaczająca koniec
+    if pz_string and pz_string.startswith("PZ"):
+        try:
+            return int(pz_string[2:])
+        except (ValueError, TypeError):
+            return None
+    return None
+
+def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug, logged=False, reason=""):
     st.session_state.debug_info = {
         "start_pz_detected": start_pz,
         "end_pz_detected": end_pz,
+        "logged_to_db": logged,
+        "reason": reason,
         "full_response_snippet": response_text_for_debug[:500]
     }
+    if not logged:
+        return
+
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
@@ -100,7 +117,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -247,14 +264,30 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    if re.search(r'COP#', response_text) and re.search(r'C#', response_text):
+                    # --- OSTATECZNA POPRAWKA TRIGGERA ---
+                    if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
                         end_pz = parse_pz(response_text)
                         if not end_pz:
                             end_pz = "PZ_END"
                         
-                        log_session_and_transition(
-                            st.session_state.operator, 
-                            st.session_state.current_start_pz, 
-                            end_pz,
-                            response_text
-                        )
+                        start_val = get_pz_value(st.session_state.current_start_pz)
+                        end_val = get_pz_value(end_pz)
+
+                        if start_val is not None and end_val is not None and end_val > start_val:
+                            log_session_and_transition(
+                                st.session_state.operator, 
+                                st.session_state.current_start_pz, 
+                                end_pz,
+                                response_text,
+                                logged=True,
+                                reason="Postęp PZ wykryty."
+                            )
+                        else:
+                            log_session_and_transition(
+                                st.session_state.operator, 
+                                st.session_state.current_start_pz, 
+                                end_pz,
+                                response_text,
+                                logged=False,
+                                reason="Brak postępu PZ (end_pz <= start_pz)."
+                            )
