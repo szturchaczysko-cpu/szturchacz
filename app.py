@@ -23,26 +23,21 @@ st.set_page_config(page_title="Szturchacz AI", layout="wide")
 def check_password():
     if st.session_state.get("password_correct", False):
         return True
-
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password")
-
     if st.button("Zaloguj"):
-        try:
-            if password_input == st.secrets["APP_PASSWORD"]:
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("😕 Błędne hasło")
-        except FileNotFoundError:
-            st.error("Brak pliku secrets.toml!")
+        if password_input == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("😕 Błędne hasło")
     return False
 
 if not check_password():
     st.stop()
 
 # ==========================================
-# 🔑 MENEDŻER KLUCZY (ROTATOR)
+# 🔑 MENEDŻER KLUCZY I TRYB AWARYJNY (DINO)
 # ==========================================
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -54,6 +49,8 @@ except Exception:
 
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
+if "is_fallback" not in st.session_state:
+    st.session_state.is_fallback = False
 
 def get_current_key():
     return API_KEYS[st.session_state.key_index]
@@ -62,15 +59,24 @@ def rotate_key():
     st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
     return st.session_state.key_index
 
-# Konfiguracja startowa (ważne dla odświeżania strony)
-genai.configure(api_key=get_current_key())
+# --- 🦖 CSS DLA CZERWONEGO PANELU ---
+if st.session_state.is_fallback:
+    st.markdown("""
+        <style>
+        [data-testid="stSidebar"] {
+            background-color: #FF4B4B !important;
+        }
+        [data-testid="stSidebar"] * {
+            color: white !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
 # ==========================================
-# 🚀 APLIKACJA SZTURCHACZ
+# 🚀 KONFIGURACJA MODELI
 # ==========================================
-
-# --- KONFIGURACJA MODELU ---
-MODEL_NAME = "gemini-3-pro-preview" 
+MODEL_PRO = "gemini-3-pro-preview"
+MODEL_FLASH = "gemini-3-flash"
 TEMPERATURE = 0.0
 
 # --- 1. PANEL BOCZNY ---
@@ -83,15 +89,19 @@ TRYBY_WSADU = {
 }
 
 with st.sidebar:
+    # Ikona dinozaura tylko w trybie awaryjnym
+    if st.session_state.is_fallback:
+        st.markdown("<h1 style='text-align: center; font-size: 80px; margin-bottom: 0;'>🦖😲</h1>", unsafe_allow_html=True)
+        st.markdown("<p style='text-align: center; font-weight: bold;'>OJOJOJ! DINOZAUR!</p>", unsafe_allow_html=True)
+        st.error("Limity PRO wyczerpane! Działam na darmowym FLASH.")
+        st.markdown("---")
+
     st.title("⚙️ Panel Sterowania")
-    
-    st.caption(f"🧠 Model: `{MODEL_NAME}`")
+    st.caption(f"🧠 Model: `{MODEL_FLASH if st.session_state.is_fallback else MODEL_PRO}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
-    current_k = get_current_key()
-    st.caption(f"🔑 Klucz: ...{current_k[-4:]} (Index: {st.session_state.key_index + 1}/{len(API_KEYS)})")
+    st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
     
     st.markdown("---")
-
     st.subheader("👤 Operator")
     wybrany_operator = st.selectbox("Kto obsługuje?", DOSTEPNI_OPERATORZY, index=0)
 
@@ -108,6 +118,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🗑️ Resetuj rozmowę"):
         st.session_state.messages = []
+        st.session_state.is_fallback = False
         st.rerun()
 
 # --- 2. LOGIKA STANU ---
@@ -123,28 +134,20 @@ if not wybrany_operator:
     st.info("👈 Wybierz operatora, aby rozpocząć.")
     st.stop()
 
-# --- 3. PROMPT (Z SECRETS) ---
+# --- 3. PROMPT I PARAMETRY ---
 try:
     SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
 except Exception:
     st.error("🚨 Brak SYSTEM_PROMPT w secrets!")
     st.stop()
 
-generation_config = {
-    "temperature": TEMPERATURE,
-    "top_p": 0.95,
-    "top_k": 40,
-    "max_output_tokens": 8192,
-}
-
 SECTION_14_OVERRIDE = """
 *** AKTUALIZACJA LOGIKI STARTOWEJ (NADPISUJE SEKCJĘ 14) ***
-14. START (ZMODYFIKOWANA LOGIKA TRYBÓW) (🟥)
+14. START (ZMODYFIKOWANA LOGIKA TRYBÓW)
 Gdy instancja jest uruchamiana bez WSADU sprawy (komenda „start”):
 1. Sprawdź parametr `domyslny_tryb`.
 2. Przywitaj `domyslny_operator`.
 3. Poproś o WSAD STARTOWY zależnie od trybu.
-4. Nie stosujesz formatu 0.4 i nie uruchamiasz analizy. Czekasz na wsad.
 """
 
 now = datetime.now()
@@ -161,10 +164,11 @@ godziny_ups='8-18'
 FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n\n" + SECTION_14_OVERRIDE + "\n" + parametry_startowe
 
 # --- 4. FUNKCJA TWORZENIA MODELU ---
-def create_model():
+def create_model(model_name):
+    genai.configure(api_key=get_current_key())
     return genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        generation_config=generation_config,
+        model_name=model_name,
+        generation_config={"temperature": TEMPERATURE, "top_p": 0.95, "max_output_tokens": 8192},
         system_instruction=FULL_PROMPT
     )
 
@@ -174,12 +178,12 @@ st.title(f"🤖 Szturchacz ({wybrany_operator})")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Auto-start
+# Autostart
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
-            model = create_model()
-            chat_init = model.start_chat(history=[])
+            m = create_model(MODEL_PRO)
+            chat_init = m.start_chat(history=[])
             response_init = chat_init.send_message("start")
             st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
@@ -189,76 +193,63 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- 6. GŁÓWNA PĘTLA (PANCERNA ROTACJA) ---
+# --- 6. GŁÓWNA PĘTLA (ROTACJA + DINO FALLBACK) ---
 if prompt := st.chat_input("Wklej wsad..."):
-    
     with st.chat_message("user"):
         st.markdown(prompt)
         if uploaded_file:
-            image_data = Image.open(uploaded_file)
-            st.image(image_data, width=300)
+            st.image(Image.open(uploaded_file), width=300)
             
     st.session_state.messages.append({"role": "user", "content": prompt})
-    if uploaded_file:
-        st.session_state.messages.append({"role": "user", "content": "[Załączono zdjęcie]"})
 
     with st.chat_message("model"):
         placeholder = st.empty()
         with st.spinner("Analizuję..."):
             
             history_for_api = [{"role": "user", "parts": ["start"]}]
-            for m in st.session_state.messages[:-1]: 
-                if m["content"] != "[Załączono zdjęcie]":
-                    history_for_api.append({"role": m["role"], "parts": [m["content"]]})
+            for m in st.session_state.messages[:-1]:
+                history_for_api.append({"role": m["role"], "parts": [m["content"]]})
             
-            content_to_send = prompt
-            if uploaded_file:
-                image_data = Image.open(uploaded_file)
-                content_to_send = [prompt, image_data]
+            content_to_send = [prompt, Image.open(uploaded_file)] if uploaded_file else prompt
 
-            # --- LOGIKA RETRY ---
+            # --- LOGIKA RETRY (ROTACJA KLUCZY PRO) ---
             max_retries = len(API_KEYS)
             attempts = 0
             success = False
             response_text = ""
 
+            # Wybieramy model (jeśli już jesteśmy w trybie dinozaura, omijamy Pro)
+            target_model = MODEL_FLASH if st.session_state.is_fallback else MODEL_PRO
+
             while attempts < max_retries and not success:
                 try:
-                    # 1. WYMUSZENIE KONFIGURACJI
-                    current_key = get_current_key()
-                    genai.configure(api_key=current_key)
-                    
-                    # 2. NOWY MODEL I CZAT
-                    current_model = create_model()
+                    genai.configure(api_key=get_current_key())
+                    current_model = create_model(target_model)
                     chat = current_model.start_chat(history=history_for_api)
-                    
-                    # 3. PRÓBA WYSŁANIA
                     response = chat.send_message(content_to_send)
                     response_text = response.text
                     success = True
                 
                 except Exception as e:
-                    # Wykrywanie błędu limitu
-                    is_quota_error = isinstance(e, google_exceptions.ResourceExhausted) or \
-                                     "429" in str(e) or \
-                                     "Quota exceeded" in str(e) or \
-                                     "403" in str(e)
-
-                    if is_quota_error:
+                    if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e):
                         attempts += 1
-                        old_key_index = st.session_state.key_index
-                        
-                        # ZMIANA KLUCZA
-                        rotate_key()
-                        
-                        placeholder.warning(f"⚠️ Klucz nr {old_key_index + 1} wyczerpany. Przełączam na klucz nr {st.session_state.key_index + 1} i ponawiam...")
-                        time.sleep(1)
+                        if attempts < max_retries:
+                            rotate_key()
+                            placeholder.warning(f"Zmiana klucza ({attempts}/{max_retries})...")
+                            time.sleep(1)
+                        else:
+                            # WYCZERPANO KLUCZE PRO -> TRYB DINOZAURA
+                            if not st.session_state.is_fallback:
+                                st.session_state.is_fallback = True
+                                target_model = MODEL_FLASH
+                                attempts = 0 # Resetujemy próby dla modelu Flash
+                                placeholder.error("⚠️ Przechodzę w tryb awaryjny (Dinozaur)! Sekunda...")
+                                time.sleep(2)
+                                st.rerun() 
                     else:
-                        st.error(f"Krytyczny błąd API: {e}")
+                        st.error(f"Krytyczny błąd: {e}")
                         break
             
             if success:
                 placeholder.markdown(response_text)
                 st.session_state.messages.append({"role": "model", "content": response_text})
-            elif attempts >= max_retries:
-                st.error("❌ Wszystkie klucze API wyczerpane! Spróbuj później.")
