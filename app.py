@@ -1,16 +1,57 @@
 import streamlit as st
 import google.generativeai as genai
-from google.generativeai import caching # <-- NOWY IMPORT
 from google.api_core import exceptions as google_exceptions
-from datetime import datetime, timedelta # <-- NOWY IMPORT
+from datetime import datetime
 import locale
 import time
+import json
+import re
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
+
+# --- INICJALIZACJA BAZY DANYCH (tylko raz na sesję) ---
+try:
+    if not firebase_admin._apps:
+        creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
+        creds = credentials.Certificate(creds_dict)
+        firebase_admin.initialize_app(creds)
+    db = firestore.client()
+except Exception as e:
+    st.error(f"Błąd połączenia z bazą danych statystyk: {e}")
+    st.stop()
+
+# --- FUNKCJE DO STATYSTYK ---
+def parse_pz(text):
+    """Wyszukuje i zwraca pierwszy znaleziony kod PZ (np. 'PZ4') w tekście."""
+    if not text:
+        return None
+    match = re.search(r'COP# PZ: (PZ\d+)', text)
+    if match:
+        return match.group(1)
+    return None
+
+def log_session_and_transition(operator_name, start_pz, end_pz):
+    """Zapisuje ukończoną sesję oraz konkretne przejście PZ w Firestore."""
+    try:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
+        
+        update_data = {"sessions_completed": firestore.Increment(1)}
+        
+        if start_pz and end_pz:
+            transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
+            update_data[transition_key] = firestore.Increment(1)
+        
+        doc_ref.set(update_data, merge=True)
+        st.toast(f"✅ Sesja dla {operator_name} zaliczona! Przejście: {start_pz} -> {end_pz}")
+    except Exception as e:
+        st.warning(f"Nie udało się zapisać statystyk: {e}")
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -41,7 +82,6 @@ if "grupa" not in st.session_state: st.session_state.grupa = ""
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = "Gemini 3.0 Pro"
-if "cache_handle" not in st.session_state: st.session_state.cache_handle = None # <-- NOWOŚĆ: Uchwyt do cache'a
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -60,13 +100,15 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
-# --- 1. PANEL BOCZNY ---
 with st.sidebar:
-    # ... (reszta panelu bocznego bez zmian) ...
+    if st.session_state.is_fallback:
+        st.markdown("<h1 style='text-align: center; font-size: 80px;'>🦖😲</h1>", unsafe_allow_html=True)
+        st.error("Limity 3.0 Pro wyczerpane! Działam na 1.5 Pro.")
+    
     st.title("⚙️ Panel Sterowania")
     st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_name = MODEL_MAP[st.session_state.selected_model_label]
@@ -90,22 +132,25 @@ with st.sidebar:
         else:
             st.session_state.messages = []
             st.session_state.chat_started = True
-            st.session_state.is_fallback = False
-            st.session_state.cache_handle = None # Resetujemy cache przy starcie
+            if st.session_state.selected_model_label == "Gemini 3.0 Pro":
+                st.session_state.is_fallback = False
             st.rerun()
 
     if st.button("🗑️ Resetuj Sesję"):
         st.session_state.clear()
         st.rerun()
 
-# --- 2. GŁÓWNY INTERFEJS ---
 st.title(f"🤖 Szturchacz")
 
 if not st.session_state.chat_started:
     st.info("👈 Wybierz parametry i kliknij **'Uruchom / Przeładuj Czat'**.")
 else:
-    # --- PROMPT I KONFIGURACJA MODELU ---
-    SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
+    try:
+        SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
+    except:
+        st.error("Brak SYSTEM_PROMPT w secrets!")
+        st.stop()
+
     parametry_startowe = f"""
 # PARAMETRY STARTOWE
 domyslny_operator={st.session_state.operator}
@@ -115,33 +160,18 @@ domyslny_tryb={wybrany_tryb_kod}
 """
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
 
-    # --- NOWOŚĆ: FUNKCJA ZARZĄDZANIA CACHEM ---
-    def get_cached_model(model_name):
-        # Jeśli mamy już aktywny cache, użyj go
-        if st.session_state.cache_handle:
-            return genai.GenerativeModel.from_cached_content(st.session_state.cache_handle)
-        
-        # Jeśli nie, stwórz nowy cache
-        with st.spinner("Tworzenie cache'a kontekstu (pierwsze uruchomienie)..."):
-            genai.configure(api_key=get_current_key())
-            cache = caching.CachedContent.create(
-                model=f'models/{model_name}',
-                system_instruction=FULL_PROMPT,
-                ttl=timedelta(hours=1) # Cache będzie żył przez 1 godzinę
-            )
-            st.session_state.cache_handle = cache
-            st.sidebar.success("Cache kontekstu aktywny!")
-            return genai.GenerativeModel.from_cached_content(cache)
+    def create_model(model_name):
+        genai.configure(api_key=get_current_key())
+        return genai.GenerativeModel(model_name=model_name, system_instruction=FULL_PROMPT,
+                                     generation_config={"temperature": TEMPERATURE})
 
     st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
-    # Autostart
     if len(st.session_state.messages) == 0:
         with st.spinner("Inicjalizacja systemu..."):
             try:
                 model_to_start = MODEL_MAP[st.session_state.selected_model_label]
-                # Używamy nowej funkcji do pobrania modelu z cache'a
-                m = get_cached_model(model_to_start)
+                m = create_model(model_to_start)
                 response = m.start_chat().send_message("start")
                 st.session_state.messages.append({"role": "model", "content": response.text})
             except Exception as e:
@@ -151,8 +181,10 @@ domyslny_tryb={wybrany_tryb_kod}
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
     
-    # --- GŁÓWNA PĘTLA ---
     if prompt := st.chat_input("Wklej wsad..."):
+        start_pz = parse_pz(prompt)
+        st.session_state.current_start_pz = start_pz if start_pz else "PZ_START"
+        
         with st.chat_message("user"):
             st.markdown(prompt)
         st.session_state.messages.append({"role": "user", "content": prompt})
@@ -174,14 +206,12 @@ domyslny_tryb={wybrany_tryb_kod}
 
                 while attempts <= max_retries and not success:
                     try:
-                        # --- ZMIANA: Używamy modelu z cache'a ---
-                        model = get_cached_model(target_model_name)
+                        genai.configure(api_key=get_current_key())
+                        model = create_model(target_model_name)
                         response = model.start_chat(history=history).send_message(prompt)
-                        placeholder.markdown(response.text)
-                        st.session_state.messages.append({"role": "model", "content": response.text})
+                        response_text = response.text
                         success = True
                     except Exception as e:
-                        # ... (reszta logiki rotatora bez zmian) ...
                         if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e):
                             attempts += 1
                             if attempts < max_retries:
@@ -191,7 +221,6 @@ domyslny_tryb={wybrany_tryb_kod}
                             else:
                                 if target_model_name == MODEL_MAP["Gemini 3.0 Pro"] and not st.session_state.is_fallback:
                                     st.session_state.is_fallback = True
-                                    st.session_state.cache_handle = None # Resetujemy cache dla nowego modelu
                                     placeholder.error("⚠️ Limity 3.0 Pro wyczerpane! Przechodzę w tryb DINOZAURA (1.5 Pro)...")
                                     time.sleep(2)
                                     st.rerun()
@@ -201,3 +230,18 @@ domyslny_tryb={wybrany_tryb_kod}
                         else:
                             st.error(f"Błąd: {e}")
                             break
+                
+                if success:
+                    placeholder.markdown(response_text)
+                    st.session_state.messages.append({"role": "model", "content": response_text})
+                    
+                    if "COP#" in response_text and "C#" in response_text:
+                        end_pz = parse_pz(response_text)
+                        if not end_pz:
+                            end_pz = "PZ_END"
+                        
+                        log_session_and_transition(
+                            st.session_state.operator, 
+                            st.session_state.current_start_pz, 
+                            end_pz
+                        )
