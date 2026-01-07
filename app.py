@@ -27,10 +27,11 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK ---
+# --- FUNKCJE DO STATYSTYK (OSTATECZNA POPRAWKA) ---
 def parse_pz(text):
+    # <-- OSTATECZNA POPRAWKA: Najprostszy możliwy regex
     if not text: return None
-    match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
+    match = re.search(r'(PZ\d+)', text)
     if match:
         return match.group(1)
     return None
@@ -246,8 +247,6 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    # --- OSTATECZNA POPRAWKA TRIGGERA ---
-                    # Używamy regex do sprawdzenia, czy oba tagi istnieją
                     if re.search(r'COP#', response_text) and re.search(r'C#', response_text):
                         end_pz = parse_pz(response_text)
                         if not end_pz:
