@@ -120,18 +120,21 @@ with st.sidebar:
         st.session_state.is_fallback = False
         st.rerun()
 
-# --- 2. LOGIKA STANU I WALIDACJA ---
+# --- 2. LOGIKA STANU I WALIDACJA (NAPRAWIONA) ---
 if "last_config" not in st.session_state:
     st.session_state.last_config = (wybrany_operator, wybrana_grupa)
 
+# Sprawdzamy, czy konfiguracja się zmieniła (np. inny operator)
+# i resetujemy rozmowę, ALE JUŻ BEZ st.rerun(), które powodowało problem.
 if st.session_state.last_config != (wybrany_operator, wybrana_grupa):
     st.session_state.messages = []
     st.session_state.last_config = (wybrany_operator, wybrana_grupa)
-    st.rerun()
+    # st.rerun()  <-- USUNIĘCIE TEJ LINII NAPRAWIA BŁĄD
 
+# Blokada, jeśli którekolwiek pole jest puste.
 if not wybrany_operator or not wybrana_grupa:
     st.info("👈 Proszę wybrać **Operatora** oraz **Grupę Operatorską**, aby rozpocząć.")
-    st.stop()
+    st.stop() # Zatrzymuje skrypt, dopóki oba pola nie będą wybrane
 
 # --- 3. PROMPT I PARAMETRY ---
 try:
@@ -168,7 +171,7 @@ st.title(f"🤖 Szturchacz ({wybrany_operator} / {wybrana_grupa})")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Autostart
+# Autostart (wykona się, gdy skrypt nie zostanie zatrzymany przez st.stop() w kroku 2)
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
