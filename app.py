@@ -1,7 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
+from google.generativeai import caching
 from google.api_core import exceptions as google_exceptions
-from datetime import datetime
+from datetime import datetime, timedelta
 import locale
 import time
 import json
@@ -15,7 +16,7 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- INICJALIZACJA BAZY DANYCH (tylko raz na sesję) ---
+# --- INICJALIZACJA BAZY DANYCH ---
 try:
     if not firebase_admin._apps:
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
@@ -26,18 +27,17 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych statystyk: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK ---
+# --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
 def parse_pz(text):
-    """Wyszukuje i zwraca pierwszy znaleziony kod PZ (np. 'PZ4') w tekście."""
-    if not text:
-        return None
-    match = re.search(r'COP# PZ: (PZ\d+)', text)
+    """Wyszukuje kod PZ w formacie 'PZ: PZx'."""
+    if not text: return None
+    match = re.search(r'PZ: (PZ\d+)', text)
     if match:
         return match.group(1)
     return None
 
 def log_session_and_transition(operator_name, start_pz, end_pz):
-    """Zapisuje ukończoną sesję oraz konkretne przejście PZ w Firestore."""
+    """Zapisuje statystyki w tle, bez powiadomień dla operatora."""
     try:
         today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
@@ -49,9 +49,8 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
             update_data[transition_key] = firestore.Increment(1)
         
         doc_ref.set(update_data, merge=True)
-        st.toast(f"✅ Sesja dla {operator_name} zaliczona! Przejście: {start_pz} -> {end_pz}")
-    except Exception as e:
-        st.warning(f"Nie udało się zapisać statystyk: {e}")
+    except Exception:
+        pass # Ignorujemy błędy zapisu statystyk
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -82,6 +81,7 @@ if "grupa" not in st.session_state: st.session_state.grupa = ""
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = "Gemini 3.0 Pro"
+if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -100,7 +100,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -132,6 +132,7 @@ with st.sidebar:
         else:
             st.session_state.messages = []
             st.session_state.chat_started = True
+            st.session_state.cache_handle = None
             if st.session_state.selected_model_label == "Gemini 3.0 Pro":
                 st.session_state.is_fallback = False
             st.rerun()
@@ -145,12 +146,7 @@ st.title(f"🤖 Szturchacz")
 if not st.session_state.chat_started:
     st.info("👈 Wybierz parametry i kliknij **'Uruchom / Przeładuj Czat'**.")
 else:
-    try:
-        SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
-    except:
-        st.error("Brak SYSTEM_PROMPT w secrets!")
-        st.stop()
-
+    SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
     parametry_startowe = f"""
 # PARAMETRY STARTOWE
 domyslny_operator={st.session_state.operator}
@@ -160,10 +156,21 @@ domyslny_tryb={wybrany_tryb_kod}
 """
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
 
-    def create_model(model_name):
-        genai.configure(api_key=get_current_key())
-        return genai.GenerativeModel(model_name=model_name, system_instruction=FULL_PROMPT,
-                                     generation_config={"temperature": TEMPERATURE})
+    def get_or_create_model(model_name, full_prompt):
+        cache_key = f"cache_{hash(full_prompt)}"
+        if st.session_state.get(cache_key):
+            return genai.GenerativeModel.from_cached_content(st.session_state[cache_key])
+        
+        with st.spinner("Tworzenie cache'a kontekstu..."):
+            genai.configure(api_key=get_current_key())
+            cache = caching.CachedContent.create(
+                model=f'models/{model_name}',
+                system_instruction=full_prompt,
+                ttl=timedelta(hours=1)
+            )
+            st.session_state[cache_key] = cache
+            st.sidebar.success("Cache kontekstu aktywny!")
+            return genai.GenerativeModel.from_cached_content(cache)
 
     st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
@@ -171,7 +178,7 @@ domyslny_tryb={wybrany_tryb_kod}
         with st.spinner("Inicjalizacja systemu..."):
             try:
                 model_to_start = MODEL_MAP[st.session_state.selected_model_label]
-                m = create_model(model_to_start)
+                m = get_or_create_model(model_to_start, FULL_PROMPT)
                 response = m.start_chat().send_message("start")
                 st.session_state.messages.append({"role": "model", "content": response.text})
             except Exception as e:
@@ -206,8 +213,7 @@ domyslny_tryb={wybrany_tryb_kod}
 
                 while attempts <= max_retries and not success:
                     try:
-                        genai.configure(api_key=get_current_key())
-                        model = create_model(target_model_name)
+                        model = get_or_create_model(target_model_name, FULL_PROMPT)
                         response = model.start_chat(history=history).send_message(prompt)
                         response_text = response.text
                         success = True
@@ -221,6 +227,7 @@ domyslny_tryb={wybrany_tryb_kod}
                             else:
                                 if target_model_name == MODEL_MAP["Gemini 3.0 Pro"] and not st.session_state.is_fallback:
                                     st.session_state.is_fallback = True
+                                    st.session_state.cache_handle = None
                                     placeholder.error("⚠️ Limity 3.0 Pro wyczerpane! Przechodzę w tryb DINOZAURA (1.5 Pro)...")
                                     time.sleep(2)
                                     st.rerun()
