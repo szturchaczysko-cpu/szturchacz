@@ -17,23 +17,24 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- INICJALIZACJA BAZY DANYCH (POPRAWIONA) ---
+# --- MENEDŻER CIASTECZEK (POPRAWIONA INICJALIZACJA) ---
+# Inicjujemy go na samym początku, przed wszystkim innym
+cookies = EncryptedCookieManager(
+    password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
+)
+if not cookies.ready():
+    # Wstrzymujemy aplikację, dopóki menedżer ciasteczek nie będzie gotowy
+    st.stop()
+
+# --- INICJALIZACJA BAZY DANYCH ---
 try:
-    # Sprawdzamy, czy aplikacja nie jest już połączona, żeby unikać błędów przy odświeżaniu
     if not firebase_admin._apps:
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
         firebase_admin.initialize_app(creds)
     db = firestore.client()
 except Exception as e:
-    st.error(f"Błąd połączenia z bazą danych statystyk: {e}")
-    st.stop()
-
-# --- MENEDŻER CIASTECZEK ---
-cookies = EncryptedCookieManager(
-    password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
-)
-if not cookies.ready():
+    st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
 # --- FUNKCJE DO STATYSTYK ---
@@ -70,7 +71,8 @@ def check_password():
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            cookies.set("password_correct", "true", expires_at=datetime.now() + timedelta(days=7))
+            cookies["password_correct"] = "true" # Używamy składni słownikowej
+            cookies.save()
             st.rerun()
         else:
             st.error("😕 Błędne hasło")
@@ -120,9 +122,10 @@ with st.sidebar:
     st.title("⚙️ Panel Sterowania")
     
     def save_settings_to_cookies():
-        cookies.set("operator", st.session_state.operator)
-        cookies.set("grupa", st.session_state.grupa)
-        cookies.set("selected_model_label", st.session_state.selected_model_label)
+        cookies["operator"] = st.session_state.operator
+        cookies["grupa"] = st.session_state.grupa
+        cookies["selected_model_label"] = st.session_state.selected_model_label
+        cookies.save()
 
     st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label", on_change=save_settings_to_cookies)
     active_model_name = MODEL_MAP[st.session_state.selected_model_label]
@@ -266,4 +269,4 @@ domyslny_tryb={wybrany_tryb_kod}
                             st.session_state.operator, 
                             st.session_state.current_start_pz, 
                             end_pz
-                        )
+                        )```
