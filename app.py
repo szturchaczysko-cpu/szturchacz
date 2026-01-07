@@ -16,8 +16,9 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- INICJALIZACJA BAZY DANYCH ---
+# --- INICJALIZACJA BAZY DANYCH (POPRAWIONA) ---
 try:
+    # Sprawdzamy, czy aplikacja nie jest już połączona
     if not firebase_admin._apps:
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
@@ -27,7 +28,7 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (Z INTELIGENTNYM LICZNIKIEM) ---
+# --- FUNKCJE DO STATYSTYK ---
 def parse_pz(text):
     if not text: return None
     match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
@@ -35,40 +36,35 @@ def parse_pz(text):
         return match.group(1)
     return None
 
+def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
+    st.session_state.debug_info = {
+        "start_pz_detected": start_pz,
+        "end_pz_detected": end_pz,
+        "full_response_snippet": response_text_for_debug[:500]
+    }
+    try:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
+        update_data = {"sessions_completed": firestore.Increment(1)}
+        if start_pz and end_pz:
+            start_val = get_pz_value(start_pz)
+            end_val = get_pz_value(end_pz)
+            if start_val is not None and end_val is not None and end_val > start_val:
+                transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
+                update_data[transition_key] = firestore.Increment(1)
+        doc_ref.set(update_data, merge=True)
+    except Exception:
+        pass
+
 def get_pz_value(pz_string):
-    """Konwertuje string 'PZx' na liczbę, obsługując specjalne przypadki."""
-    if pz_string == "PZ_START":
-        return -1
-    if pz_string == "PZ_END":
-        return 999 # Duża liczba oznaczająca koniec
+    if pz_string == "PZ_START": return -1
+    if pz_string == "PZ_END": return 999
     if pz_string and pz_string.startswith("PZ"):
         try:
             return int(pz_string[2:])
         except (ValueError, TypeError):
             return None
     return None
-
-def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug, logged=False, reason=""):
-    st.session_state.debug_info = {
-        "start_pz_detected": start_pz,
-        "end_pz_detected": end_pz,
-        "logged_to_db": logged,
-        "reason": reason,
-        "full_response_snippet": response_text_for_debug[:500]
-    }
-    if not logged:
-        return
-
-    try:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
-        update_data = {"sessions_completed": firestore.Increment(1)}
-        if start_pz and end_pz:
-            transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
-            update_data[transition_key] = firestore.Increment(1)
-        doc_ref.set(update_data, merge=True)
-    except Exception:
-        pass
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -82,6 +78,8 @@ def check_password():
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
             st.rerun()
+        else:
+            st.error("😕 Błędne hasło")
     return False
 
 if not check_password():
@@ -264,30 +262,14 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    # --- OSTATECZNA POPRAWKA TRIGGERA ---
                     if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
                         end_pz = parse_pz(response_text)
                         if not end_pz:
                             end_pz = "PZ_END"
                         
-                        start_val = get_pz_value(st.session_state.current_start_pz)
-                        end_val = get_pz_value(end_pz)
-
-                        if start_val is not None and end_val is not None and end_val > start_val:
-                            log_session_and_transition(
-                                st.session_state.operator, 
-                                st.session_state.current_start_pz, 
-                                end_pz,
-                                response_text,
-                                logged=True,
-                                reason="Postęp PZ wykryty."
-                            )
-                        else:
-                            log_session_and_transition(
-                                st.session_state.operator, 
-                                st.session_state.current_start_pz, 
-                                end_pz,
-                                response_text,
-                                logged=False,
-                                reason="Brak postępu PZ (end_pz <= start_pz)."
-                            )
+                        log_session_and_transition(
+                            st.session_state.operator, 
+                            st.session_state.current_start_pz, 
+                            end_pz,
+                            response_text
+                        )
