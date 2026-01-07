@@ -17,7 +17,7 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- MENEDŻER CIASTECZEK (POPRAWIONA INICJALIZACJA) ---
+# --- MENEDŻER CIASTECZEK ---
 cookies = EncryptedCookieManager(
     password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
 )
@@ -37,9 +37,9 @@ except Exception as e:
 
 # --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
 def parse_pz(text):
-    # <-- POPRAWKA 2: Regex jest teraz mniej restrykcyjny i znajdzie 'PZ: PZx'
+    # <-- POPRAWKA 1: Bardziej elastyczny regex
     if not text: return None
-    match = re.search(r'PZ: (PZ\d+)', text)
+    match = re.search(r'PZ:\s*(PZ\d+)', text)
     if match:
         return match.group(1)
     return None
@@ -72,7 +72,7 @@ def check_password():
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            # <-- POPRAWKA 1: Używamy składni słownikowej i jawnego zapisu
+            # <-- POPRAWKA 2: Jawny zapis ciasteczka
             cookies['password_correct'] = 'true'
             cookies.save()
             st.rerun()
@@ -112,7 +112,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -123,32 +123,32 @@ with st.sidebar:
     
     st.title("⚙️ Panel Sterowania")
     
-    def save_settings_to_cookies():
-        cookies['operator'] = st.session_state.operator
-        cookies['grupa'] = st.session_state.grupa
-        cookies['selected_model_label'] = st.session_state.selected_model_label
-        cookies.save()
-
-    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label", on_change=save_settings_to_cookies)
-    active_model_name = MODEL_MAP[st.session_state.selected_model_label]
-    st.caption(f"🧠 Model: `{active_model_name}`")
-    st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
-    st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
-    st.markdown("---")
+    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     st.subheader("👤 Operator")
-    st.selectbox("Kto obsługuje?", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator", on_change=save_settings_to_cookies)
+    st.selectbox("Kto obsługuje?", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator")
     st.subheader("🌐 Grupa Operatorska")
-    st.selectbox("Do której grupy należysz?", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa", on_change=save_settings_to_cookies)
+    st.selectbox("Do której grupy należysz?", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
     st.subheader("📥 Tryb Startowy")
     TRYBY_WSADU = {"Standard": "od_szturchacza", "WA": "WA", "E-mail": "MAIL", "Forum/Inne": "FORUM"}
     wybrany_tryb_label = st.selectbox("Typ pierwszego wsadu?", list(TRYBY_WSADU.keys()), key="tryb_label")
     wybrany_tryb_kod = TRYBY_WSADU.get(st.session_state.tryb_label, "od_szturchacza")
+    
+    active_model_name = MODEL_MAP[st.session_state.selected_model_label]
+    st.caption(f"🧠 Model: `{active_model_name}`")
+    st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
+    st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
     st.markdown("---")
     
     if st.button("🚀 Uruchom / Przeładuj Czat", type="primary"):
         if not st.session_state.operator or not st.session_state.grupa:
             st.sidebar.error("Wybierz Operatora i Grupę!")
         else:
+            # Zapisujemy ustawienia w ciasteczkach PRZED uruchomieniem
+            cookies['operator'] = st.session_state.operator
+            cookies['grupa'] = st.session_state.grupa
+            cookies['selected_model_label'] = st.session_state.selected_model_label
+            cookies.save()
+            
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.cache_handle = None
@@ -261,7 +261,7 @@ domyslny_tryb={wybrany_tryb_kod}
                 
                 if success:
                     placeholder.markdown(response_text)
-                    st.session_state.messages.append({"role": "model", "content": response_text})
+                    st.session_state.messages.append({"role": "model", "content": response.text})
                     
                     if "COP#" in response_text and "C#" in response_text:
                         end_pz = parse_pz(response_text)
