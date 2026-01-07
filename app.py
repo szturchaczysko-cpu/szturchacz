@@ -1,5 +1,7 @@
 import streamlit as st
 import google.generativeai as genai
+from google.api_core import exceptions as google_exceptions
+from PIL import Image
 from datetime import datetime
 import locale
 import time
@@ -13,7 +15,7 @@ except locale.Error:
     except:
         pass
 
-st.set_page_config(page_title="Szturchacz AI (Multi-Key)", layout="wide")
+st.set_page_config(page_title="Szturchacz AI", layout="wide")
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -22,7 +24,7 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
 
-    st.header("🔒 Dostęp chroniony")
+    st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password")
 
     if st.button("Zaloguj"):
@@ -40,41 +42,35 @@ if not check_password():
     st.stop()
 
 # ==========================================
-# 🔑 MENEDŻER KLUCZY (ROTATOR)
+# 🔑 MENEDŻER KLUCZY (ROTATOR - NAPRAWIONY)
 # ==========================================
-
-# 1. Pobierz listę kluczy z secrets
 try:
     API_KEYS = st.secrets["API_KEYS"]
     if not isinstance(API_KEYS, list):
-        # Zabezpieczenie, gdyby ktoś wpisał jeden klucz jako string
         API_KEYS = [API_KEYS]
 except Exception:
-    st.error("🚨 Błąd: Brak 'API_KEYS' w secrets.toml (musi to być lista!)")
+    st.error("🚨 Błąd: Brak 'API_KEYS' w secrets.toml")
     st.stop()
 
-# 2. Ustaw indeks klucza w sesji, jeśli go nie ma
+# Inicjalizacja indeksu klucza (tylko raz)
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
 def get_current_key():
-    """Zwraca aktualnie używany klucz."""
+    """Pobiera klucz na podstawie aktualnego indeksu w sesji."""
     return API_KEYS[st.session_state.key_index]
 
 def rotate_key():
-    """Przełącza na następny klucz w liście."""
+    """Przesuwa indeks na następny i zwraca nowy indeks."""
     st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
-    new_key = get_current_key()
-    # Re-konfiguracja biblioteki nowym kluczem
-    genai.configure(api_key=new_key)
     return st.session_state.key_index
 
-# Konfiguracja wstępna (przy starcie)
+# --- KLUCZOWE: KONFIGURACJA NA STARCIE SKRYPTU ---
+# To gwarantuje, że po odświeżeniu/resecie używamy ostatniego dobrego klucza
 genai.configure(api_key=get_current_key())
 
-
 # ==========================================
-# 🚀 APLIKACJA
+# 🚀 APLIKACJA SZTURCHACZ
 # ==========================================
 
 # --- KONFIGURACJA MODELU ---
@@ -92,8 +88,16 @@ TRYBY_WSADU = {
 
 with st.sidebar:
     st.title("⚙️ Panel Sterowania")
-    st.caption(f"🔑 Aktywny klucz: ...{get_current_key()[-4:]} (Index: {st.session_state.key_index + 1}/{len(API_KEYS)})")
     
+    # Info o modelu i kluczu (dla pewności, że się zmienił)
+    st.caption(f"🧠 Model: `{MODEL_NAME}`")
+    st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
+    # Pokazujemy końcówkę klucza, żebyś widział czy się zmienił po błędzie
+    current_k = get_current_key()
+    st.caption(f"🔑 Klucz: ...{current_k[-4:]} (Index: {st.session_state.key_index + 1}/{len(API_KEYS)})")
+    
+    st.markdown("---")
+
     st.subheader("👤 Operator")
     wybrany_operator = st.selectbox("Kto obsługuje?", DOSTEPNI_OPERATORZY, index=0)
 
@@ -102,7 +106,14 @@ with st.sidebar:
     wybrany_tryb_kod = TRYBY_WSADU[wybrany_tryb_label]
     
     st.markdown("---")
+    st.subheader("📸 Załącznik")
+    uploaded_file = st.file_uploader("Dodaj zdjęcie/zrzut", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        st.image(uploaded_file, caption="Podgląd", use_container_width=True)
+
+    st.markdown("---")
     if st.button("🗑️ Resetuj rozmowę"):
+        # Czyścimy tylko wiadomości, NIE czyścimy key_index!
         st.session_state.messages = []
         st.rerun()
 
@@ -133,7 +144,6 @@ generation_config = {
     "max_output_tokens": 8192,
 }
 
-# --- 4. SKLEJANIE PROMPTA ---
 SECTION_14_OVERRIDE = """
 *** AKTUALIZACJA LOGIKI STARTOWEJ (NADPISUJE SEKCJĘ 14) ***
 14. START (ZMODYFIKOWANA LOGIKA TRYBÓW) (🟥)
@@ -157,93 +167,108 @@ godziny_ups='8-18'
 
 FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n\n" + SECTION_14_OVERRIDE + "\n" + parametry_startowe
 
-# --- 5. INICJALIZACJA MODELU ---
-# Funkcja pomocnicza do tworzenia modelu (potrzebna przy restarcie klucza)
+# --- 4. FUNKCJA TWORZENIA MODELU ---
 def create_model():
+    # Model zawsze pobierze aktualną konfigurację z genai.configure()
     return genai.GenerativeModel(
         model_name=MODEL_NAME,
         generation_config=generation_config,
         system_instruction=FULL_PROMPT
     )
 
-model = create_model()
-
-# --- 6. INTERFEJS CZATU ---
+# --- 5. INTERFEJS CZATU ---
 st.title(f"🤖 Szturchacz ({wybrany_operator})")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Auto-start (z obsługą błędów)
+# Auto-start
 if len(st.session_state.messages) == 0:
     try:
         with st.spinner("Inicjalizacja systemu..."):
-            # Tutaj też może wystąpić 429, więc warto zabezpieczyć
+            # Tutaj też używamy pętli retry, bo start też może dostać 429!
+            model = create_model()
             chat_init = model.start_chat(history=[])
             response_init = chat_init.send_message("start")
             st.session_state.messages.append({"role": "model", "content": response_init.text})
     except Exception as e:
-        # Prosta obsługa błędu przy starcie - użytkownik może odświeżyć
-        st.error(f"Błąd startu (spróbuj odświeżyć): {e}")
+        # Jeśli start padnie, to trudno - user odświeży, ale zazwyczaj start jest lekki
+        st.error(f"Błąd startu: {e}")
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- 7. GŁÓWNA PĘTLA Z ROTACJĄ KLUCZY ---
+# --- 6. GŁÓWNA PĘTLA (PANCERNA ROTACJA) ---
 if prompt := st.chat_input("Wklej wsad..."):
+    
     with st.chat_message("user"):
         st.markdown(prompt)
+        if uploaded_file:
+            image_data = Image.open(uploaded_file)
+            st.image(image_data, width=300)
+            
     st.session_state.messages.append({"role": "user", "content": prompt})
+    if uploaded_file:
+        st.session_state.messages.append({"role": "user", "content": "[Załączono zdjęcie]"})
 
     with st.chat_message("model"):
         placeholder = st.empty()
         with st.spinner("Analizuję..."):
             
-            # Przygotowanie historii
             history_for_api = [{"role": "user", "parts": ["start"]}]
-            for m in st.session_state.messages[:-1]: # Bez ostatniej wiadomości usera (bo idzie w send_message)
-                history_for_api.append({"role": m["role"], "parts": [m["content"]]})
+            for m in st.session_state.messages[:-1]: 
+                if m["content"] != "[Załączono zdjęcie]":
+                    history_for_api.append({"role": m["role"], "parts": [m["content"]]})
             
-            # --- LOGIKA RETRY (ROTACJA) ---
-            max_retries = len(API_KEYS) # Próbujemy tyle razy, ile mamy kluczy
+            content_to_send = prompt
+            if uploaded_file:
+                image_data = Image.open(uploaded_file)
+                content_to_send = [prompt, image_data]
+
+            # --- LOGIKA RETRY ---
+            max_retries = len(API_KEYS)
             attempts = 0
             success = False
             response_text = ""
 
             while attempts < max_retries and not success:
                 try:
-                    # 1. Upewnij się, że konfiguracja ma aktualny klucz
-                    genai.configure(api_key=get_current_key())
+                    # 1. WYMUSZENIE KONFIGURACJI (Kluczowe dla pętli!)
+                    current_key = get_current_key()
+                    genai.configure(api_key=current_key)
                     
-                    # 2. Stwórz czat na nowo (żeby zassał nowy klucz)
-                    # Uwaga: model musi być odświeżony, jeśli genai.configure jest globalne
+                    # 2. NOWY MODEL I CZAT (Kluczowe dla odświeżenia!)
                     current_model = create_model()
                     chat = current_model.start_chat(history=history_for_api)
                     
-                    # 3. Wyślij wiadomość
-                    response = chat.send_message(prompt)
+                    # 3. PRÓBA WYSŁANIA
+                    response = chat.send_message(content_to_send)
                     response_text = response.text
                     success = True
                 
                 except Exception as e:
-                    error_msg = str(e)
-                    # Sprawdzamy czy to błąd limitu (429 lub Quota exceeded)
-                    if "429" in error_msg or "Quota exceeded" in error_msg or "Resource has been exhausted" in error_msg:
+                    # Wykrywanie błędu limitu
+                    is_quota_error = isinstance(e, google_exceptions.ResourceExhausted) or \
+                                     "429" in str(e) or \
+                                     "Quota exceeded" in str(e) or \
+                                     "403" in str(e)
+
+                    if is_quota_error:
                         attempts += 1
-                        old_key_id = st.session_state.key_index + 1
-                        new_index = rotate_key() # Zmieniamy klucz w sesji
+                        old_key_index = st.session_state.key_index
                         
-                        # Informacja dla usera (opcjonalna, można usunąć żeby było seamless)
-                        placeholder.warning(f"⚠️ Limit klucza nr {old_key_id} wyczerpany. Przełączam na klucz nr {new_index + 1} i ponawiam...")
-                        time.sleep(1) # Krótka pauza dla stabilności
+                        # ZMIANA KLUCZA W SESJI (TRWAŁA)
+                        rotate_key()
+                        
+                        placeholder.warning(f"⚠️ Klucz nr {old_key_index + 1} wyczerpany. Przełączam na klucz nr {st.session_state.key_index + 1} i ponawiam...")
+                        time.sleep(1) # Oddech dla API
                     else:
-                        # Inny błąd (np. serwer padł, zły prompt) - przerywamy
-                        st.error(f"Wystąpił krytyczny błąd API: {e}")
+                        st.error(f"Krytyczny błąd API: {e}")
                         break
             
             if success:
                 placeholder.markdown(response_text)
                 st.session_state.messages.append({"role": "model", "content": response_text})
             elif attempts >= max_retries:
-                st.error("❌ Wszystkie klucze API zostały wyczerpane! Spróbuj później lub dodaj więcej kluczy.")
+                st.error("❌ Wszystkie klucze API wyczerpane! Spróbuj później.")
