@@ -7,6 +7,7 @@ import locale
 import time
 import json
 import re
+import pytz # Wymagane do czasu PL
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -27,61 +28,72 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
+# --- FUNKCJE DO STATYSTYK (POPRAWIONE ZAPISYWANIE) ---
 def parse_pz(text):
-    """
-    Szuka ciągu PZ i cyfry.
-    Działa dla: 'PZ0', 'PZ 1', 'PZ: 2', 'pz4'.
-    Zwraca sformatowany string np. 'PZ0'.
-    """
     if not text: return None
-    match = re.search(r'PZ\s*[:]*\s*(\d+)', text, re.IGNORECASE)
+    match = re.search(r'(PZ\d+)', text)
     if match:
-        return f"PZ{match.group(1)}"
+        return match.group(1)
     return None
 
 def get_pz_value(pz_string):
-    """Zamienia PZ na liczbę do porównania."""
     if pz_string == "PZ_START": return -1
     if pz_string == "PZ_END": return 999
-    
     if pz_string and pz_string.startswith("PZ"):
         try:
-            # Wyciągamy wszystko po "PZ" i zamieniamy na int
             return int(pz_string[2:])
         except (ValueError, TypeError):
             return None
     return None
 
 def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
-    # Debugger w sesji
+    # Ustawiamy czas Polski
+    tz_pl = pytz.timezone('Europe/Warsaw')
+    now_pl = datetime.now(tz_pl)
+    today_str = now_pl.strftime("%Y-%m-%d")
+    
     st.session_state.debug_info = {
-        "start_pz_raw": start_pz,
-        "end_pz_raw": end_pz,
-        "timestamp": datetime.now().strftime("%H:%M:%S")
+        "start_pz": start_pz,
+        "end_pz": end_pz,
+        "timestamp": now_pl.strftime("%H:%M:%S"),
+        "status": "INIT"
     }
 
     try:
-        today_str = datetime.now().strftime("%Y-%m-%d")
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
         
-        # 1. Zawsze logujemy sesję (bo wygenerowano COP#)
-        update_data = {"sessions_completed": firestore.Increment(1)}
-        
-        # 2. Logujemy przejście TYLKO jeśli jest postęp
         start_val = get_pz_value(start_pz)
         end_val = get_pz_value(end_pz)
         
-        if start_val is not None and end_val is not None and end_val > start_val:
-            transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
-            update_data[transition_key] = firestore.Increment(1)
-            st.session_state.debug_info["status"] = "ZALOGOWANO PRZEJŚCIE ✅"
-        else:
-            st.session_state.debug_info["status"] = "BRAK POSTĘPU (Tylko sesja) ⚠️"
-
-        doc_ref.set(update_data, merge=True)
+        # Sprawdzamy czy jest postęp
+        is_transition = start_val is not None and end_val is not None and end_val > start_val
         
+        if is_transition:
+            # PRÓBA 1: UPDATE (Działa jeśli dokument już istnieje)
+            # To kluczowe: update z kropką tworzy zagnieżdżoną mapę, którą widzi Admin
+            try:
+                doc_ref.update({
+                    "sessions_completed": firestore.Increment(1),
+                    f"pz_transitions.{start_pz}_to_{end_pz}": firestore.Increment(1)
+                })
+                st.session_state.debug_info["status"] = "ZALOGOWANO (UPDATE) ✅"
+            except Exception:
+                # PRÓBA 2: SET (Jeśli dokumentu nie ma, tworzymy go od zera)
+                # Tutaj musimy podać słownik zagnieżdżony
+                doc_ref.set({
+                    "sessions_completed": 1,
+                    "pz_transitions": {
+                        f"{start_pz}_to_{end_pz}": 1
+                    }
+                }, merge=True)
+                st.session_state.debug_info["status"] = "ZALOGOWANO (SET) ✅"
+        else:
+            # Tylko sesja, bez przejścia
+            doc_ref.set({"sessions_completed": firestore.Increment(1)}, merge=True)
+            st.session_state.debug_info["status"] = "TYLKO SESJA (BRAK POSTĘPU) ⚠️"
+
     except Exception as e:
+        st.session_state.debug_info["status"] = "BŁĄD ZAPISU ❌"
         st.session_state.debug_info["error"] = str(e)
 
 # ==========================================
@@ -90,16 +102,12 @@ def log_session_and_transition(operator_name, start_pz, end_pz, response_text_fo
 def check_password():
     if st.session_state.get("password_correct"):
         return True
-    
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
-    
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
             st.rerun()
-        else:
-            st.error("😕 Błędne hasło")
     return False
 
 if not check_password():
@@ -136,7 +144,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -230,9 +238,7 @@ domyslny_tryb={wybrany_tryb_kod}
             st.markdown(msg["content"])
     
     if prompt := st.chat_input("Wklej wsad..."):
-        # 1. Parsujemy PZ ze wsadu operatora
         start_pz = parse_pz(prompt)
-        # Jeśli znaleziono PZ, używamy go. Jeśli nie, to znaczy że to nowa sprawa (PZ_START)
         st.session_state.current_start_pz = start_pz if start_pz else "PZ_START"
         
         with st.chat_message("user"):
@@ -285,8 +291,6 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    # --- TRIGGER LOGOWANIA ---
-                    # Sprawdzamy czy są tagi kończące sesję (case-insensitive)
                     if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
                         end_pz = parse_pz(response_text)
                         if not end_pz:
