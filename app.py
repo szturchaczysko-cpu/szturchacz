@@ -111,7 +111,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
+    "Gemini 2.5 Pro": "gemini-2.5-pro"
 }
 TEMPERATURE = 0.0
 
