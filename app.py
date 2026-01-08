@@ -8,7 +8,7 @@ import time
 import json
 import re
 import pytz
-import hashlib # Do stabilnego identyfikowania promptu
+import hashlib
 import firebase_admin
 from firebase_admin import credentials, firestore
 from streamlit_cookies_manager import EncryptedCookieManager
@@ -88,56 +88,66 @@ def check_password():
 if not check_password(): st.stop()
 
 # ==========================================
-# 🔑 STAN APLIKACJI
+# 🔑 MENEDŻER KLUCZY
 # ==========================================
-if "key_index" not in st.session_state: st.session_state.key_index = 0
-if "is_fallback" not in st.session_state: st.session_state.is_fallback = False
-if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
-if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
-if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 3.0 Pro")
-if "messages" not in st.session_state: st.session_state.messages = []
-if "chat_started" not in st.session_state: st.session_state.chat_started = False
-if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
-
 try:
     API_KEYS = st.secrets["API_KEYS"]
 except:
-    st.error("Brak API_KEYS!")
+    st.error("Brak listy API_KEYS w secrets!")
     st.stop()
 
-def get_current_key(): return API_KEYS[st.session_state.key_index]
-def rotate_key(): 
+if "key_index" not in st.session_state: st.session_state.key_index = 0
+
+def get_current_key():
+    return API_KEYS[st.session_state.key_index]
+
+def rotate_key():
     st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
     return st.session_state.key_index
-
-if st.session_state.is_fallback:
-    st.markdown("""<style>[data-testid="stSidebar"] {background-color: #FF4B4B !important;} [data-testid="stSidebar"] * {color: white !important;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
 # 🚀 KONFIGURACJA MODELI
 # ==========================================
 MODEL_MAP = {
-    "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro",
+    "Gemini 3.0 Pro": "gemini-3-pro-preview"
 }
-MODEL_DINO_FINAL = "gemini-3-flash-preview"
 TEMPERATURE = 0.0
 
-with st.sidebar:
-    if st.session_state.is_fallback:
-        st.markdown("<h1 style='text-align: center; font-size: 80px;'>🦖😲</h1>", unsafe_allow_html=True)
-        st.error("Limity wyczerpane! Tryb awaryjny.")
-    
-    st.title("⚙️ Panel Sterowania")
-    st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
-    
-    active_model_id = MODEL_MAP[st.session_state.selected_model_label]
-    if st.session_state.is_fallback:
-        active_model_id = MODEL_MAP["Gemini 1.5 Pro (2.5)"] if st.session_state.selected_model_label == "Gemini 3.0 Pro" else MODEL_DINO_FINAL
+# Inicjalizacja stanu
+if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
+if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 1.5 Pro (2.5)")
+if "messages" not in st.session_state: st.session_state.messages = []
+if "chat_started" not in st.session_state: st.session_state.chat_started = False
+if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
 
-    st.caption(f"🧠 Model: `{active_model_id}`")
+with st.sidebar:
+    st.title("⚙️ Panel Sterowania")
+    
+    # Wybór modelu
+    st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    active_model_id = MODEL_MAP[st.session_state.selected_model_label]
+    
+    st.markdown("---")
+    # --- NOWOŚĆ: RĘCZNA ZMIANA KLUCZA ---
+    st.subheader("🔑 Zarządzanie Kluczami")
+    manual_key = st.checkbox("Ręczny wybór klucza")
+    
+    if manual_key:
+        # Tworzymy listę etykiet dla kluczy
+        key_options = [f"Klucz {i+1} (...{API_KEYS[i][-4:]})" for i in range(len(API_KEYS))]
+        selected_key_label = st.selectbox("Wybierz aktywny klucz:", key_options, index=st.session_state.key_index)
+        # Aktualizujemy indeks na podstawie wyboru
+        new_index = key_options.index(selected_key_label)
+        if new_index != st.session_state.key_index:
+            st.session_state.key_index = new_index
+            st.toast(f"Przełączono na klucz {new_index + 1}")
+    else:
+        st.caption(f"Aktywny klucz: {st.session_state.key_index + 1} / {len(API_KEYS)}")
+        st.caption(f"ID: `...{get_current_key()[-4:]}`")
+
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
-    st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
     st.markdown("---")
     
     st.selectbox("Operator:", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"], key="operator")
@@ -161,11 +171,11 @@ with st.sidebar:
             cookies['grupa'] = st.session_state.grupa
             cookies['selected_model_label'] = st.session_state.selected_model_label
             cookies.save()
+            
             st.session_state.messages = []
             st.session_state.chat_started = True
-            st.session_state.is_fallback = False
             st.session_state.current_start_pz = None
-            # Czyścimy cache przy nowym starcie
+            # Czyścimy cache w sesji przy nowym starcie
             for k in list(st.session_state.keys()):
                 if k.startswith("cache_"): del st.session_state[k]
             st.rerun()
@@ -187,7 +197,6 @@ else:
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + parametry_startowe
 
     def get_or_create_model(model_name, full_prompt):
-        # Stabilny hash promptu (MD5 nie zmienia się między restartami)
         prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
         # Cache jest unikalny dla: Klucza + Modelu + Treści Promptu
         cache_key = f"cache_{st.session_state.key_index}_{model_name}_{prompt_hash}"
@@ -196,10 +205,8 @@ else:
             try:
                 return genai.GenerativeModel.from_cached_content(st.session_state[cache_key])
             except:
-                # Jeśli cache wygasł w Google, usuwamy go z sesji i tworzymy nowy
                 del st.session_state[cache_key]
         
-        # Tworzenie nowego cache
         genai.configure(api_key=get_current_key())
         cache = caching.CachedContent.create(
             model=f'models/{model_name}',
@@ -211,18 +218,42 @@ else:
 
     st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
+    def call_gemini_with_rotation(history, user_input):
+        max_retries = len(API_KEYS)
+        attempts = 0
+        
+        while attempts < max_retries:
+            try:
+                genai.configure(api_key=get_current_key())
+                model = get_or_create_model(active_model_id, FULL_PROMPT)
+                chat = model.start_chat(history=history)
+                response = chat.send_message(user_input)
+                return response.text, True
+            
+            except Exception as e:
+                if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e):
+                    attempts += 1
+                    # Jeśli nie jesteśmy w trybie ręcznym, rotujemy automatycznie
+                    if not manual_key:
+                        rotate_key()
+                        st.toast(f"🔄 Automatyczna rotacja: Klucz {st.session_state.key_index + 1}")
+                        time.sleep(1)
+                    else:
+                        return "❌ Limit wybranego klucza wyczerpany. Zmień klucz ręcznie w panelu bocznym.", False
+                else:
+                    return f"Błąd API: {str(e)}", False
+        
+        return "❌ Wszystkie klucze wyczerpane.", False
+
     # Autostart
     if len(st.session_state.messages) == 0:
         with st.spinner("Inicjalizacja..."):
-            try:
-                m = get_or_create_model(active_model_id, FULL_PROMPT)
-                resp = m.start_chat().send_message("start")
-                st.session_state.messages.append({"role": "model", "content": resp.text})
-            except Exception as e:
-                if "429" in str(e) or "Quota" in str(e):
-                    rotate_key()
-                    st.rerun()
-                st.error(f"Błąd startu: {e}")
+            res_text, success = call_gemini_with_rotation([], "start")
+            if success:
+                st.session_state.messages.append({"role": "model", "content": res_text})
+                st.rerun()
+            else:
+                st.error(res_text)
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
@@ -236,38 +267,16 @@ else:
         st.session_state.messages.append({"role": "user", "content": prompt})
         
         with st.chat_message("model"):
-            placeholder = st.empty()
             with st.spinner("Analizuję..."):
-                history = [{"role": "user", "parts": ["start"]}] + [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
-                
-                max_retries = len(API_KEYS)
-                attempts = 0
-                success = False
-                
-                while attempts < max_retries and not success:
-                    try:
-                        model = get_or_create_model(active_model_id, FULL_PROMPT)
-                        response = model.start_chat(history=history).send_message(prompt)
-                        response_text = response.text
-                        success = True
-                    except Exception as e:
-                        if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e):
-                            attempts += 1
-                            rotate_key()
-                            placeholder.warning(f"Limit klucza {attempts} wyczerpany. Przełączam...")
-                            time.sleep(1)
-                        else:
-                            st.error(f"Błąd API: {e}")
-                            break
-                
-                if not success and not st.session_state.is_fallback:
-                    st.session_state.is_fallback = True
-                    st.rerun()
+                history_api = [{"role": "user", "parts": ["start"]}] + [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
+                res_text, success = call_gemini_with_rotation(history_api, prompt)
                 
                 if success:
-                    placeholder.markdown(response_text)
-                    st.session_state.messages.append({"role": "model", "content": response_text})
-                    if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
-                        end_pz = parse_pz(response_text)
+                    st.markdown(res_text)
+                    st.session_state.messages.append({"role": "model", "content": res_text})
+                    if 'cop#' in res_text.lower() and 'c#' in res_text.lower():
+                        end_pz = parse_pz(res_text)
                         log_session_and_transition(st.session_state.operator, st.session_state.current_start_pz, end_pz if end_pz else "PZ_END")
                         st.session_state.current_start_pz = None
+                else:
+                    st.error(res_text)
