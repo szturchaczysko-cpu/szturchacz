@@ -10,12 +10,21 @@ import re
 import pytz
 import firebase_admin
 from firebase_admin import credentials, firestore
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
 st.set_page_config(page_title="Szturchacz AI", layout="wide")
 try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
+
+# --- MENEDŻER CIASTECZEK (PRZYWRÓCONY) ---
+# Wymaga COOKIE_PASSWORD w secrets.toml
+cookies = EncryptedCookieManager(
+    password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
+)
+if not cookies.ready():
+    st.stop()
 
 # --- INICJALIZACJA BAZY DANYCH ---
 try:
@@ -28,9 +37,10 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE POMOCNICZE (STATYSTYKI) ---
+# --- FUNKCJE DO STATYSTYK ---
 def parse_pz(text):
     if not text: return None
+    # Szuka PZ+cyfra (np. PZ0, PZ12)
     match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
@@ -66,38 +76,54 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
         pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA
+# 🔒 BRAMKA BEZPIECZEŃSTWA (Z ZAPAMIĘTYWANIEM)
 # ==========================================
 def check_password():
-    if st.session_state.get("password_correct"): return True
-    st.header("🔒 Dostęp chroniony")
-    pwd = st.text_input("Hasło:", type="password")
+    # 1. Sprawdź sesję bieżącą
+    if st.session_state.get("password_correct"):
+        return True
+    
+    # 2. Sprawdź ciasteczko (dla Chrome)
+    if cookies.get("password_correct") == "true":
+        st.session_state.password_correct = True
+        return True
+
+    st.header("🔒 Dostęp chroniony (Szturchacz)")
+    password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
+    
     if st.button("Zaloguj"):
-        if pwd == st.secrets["APP_PASSWORD"]:
+        if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
+            # Zapisz w ciasteczku
+            cookies['password_correct'] = 'true'
+            cookies.save()
             st.rerun()
+        else:
+            st.error("😕 Błędne hasło")
     return False
 
-if not check_password(): st.stop()
+if not check_password():
+    st.stop()
 
 # ==========================================
-# 🔑 STAN APLIKACJI
+# 🔑 INICJALIZACJA STANU APLIKACJI
 # ==========================================
 if "key_index" not in st.session_state: st.session_state.key_index = 0
 if "is_fallback" not in st.session_state: st.session_state.is_fallback = False
-if "operator" not in st.session_state: st.session_state.operator = ""
-if "grupa" not in st.session_state: st.session_state.grupa = ""
-if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = "Gemini 3.0 Pro"
+# Próba odczytu z ciasteczek, jeśli brak w sesji
+if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
+if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 3.0 Pro")
+
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
-# Inicjalizacja PZ startowego (domyślnie None, ustawiane przy pierwszym wsadzie)
 if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
 except:
-    st.error("Brak API_KEYS!")
+    st.error("Brak listy API_KEYS w secrets!")
     st.stop()
 
 def get_current_key(): return API_KEYS[st.session_state.key_index]
@@ -111,7 +137,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 2.5 Pro": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -122,7 +148,7 @@ with st.sidebar:
     
     st.title("⚙️ Panel Sterowania")
     
-    # --- PRZYWRÓCONE INFORMACJE ---
+    # Wybór modelu (zapisywany w ciasteczku przy uruchomieniu)
     st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_name = MODEL_MAP[st.session_state.selected_model_label]
     if st.session_state.is_fallback: active_model_name = MODEL_MAP["Gemini 1.5 Pro (2.5)"]
@@ -135,8 +161,13 @@ with st.sidebar:
     st.selectbox("Operator:", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator")
     st.selectbox("Grupa:", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
     
-    # Mapowanie nazw trybów na kody z prompta
-    TRYBY_DICT = {"Standard": "od_szturchacza", "Kanał": "kanal"}
+    # --- PRZYWRÓCONE PEŁNE TRYBY ---
+    TRYBY_DICT = {
+        "Standard (Panel + Koperta)": "od_szturchacza",
+        "WhatsApp (Rolka + Panel)": "WA",
+        "E-mail (Rolka + Panel)": "MAIL",
+        "Forum/Inne (Wpis + Panel)": "FORUM"
+    }
     tryb_label = st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()))
     wybrany_tryb_kod = TRYBY_DICT[tryb_label]
     
@@ -145,11 +176,17 @@ with st.sidebar:
         if not st.session_state.operator or not st.session_state.grupa:
             st.error("Wybierz Operatora i Grupę!")
         else:
+            # ZAPIS DO CIASTECZEK (Dla Chrome)
+            cookies['operator'] = st.session_state.operator
+            cookies['grupa'] = st.session_state.grupa
+            cookies['selected_model_label'] = st.session_state.selected_model_label
+            cookies.save()
+            
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.cache_handle = None
-            # Resetujemy PZ startowy przy nowej sprawie
             st.session_state.current_start_pz = None
+            
             if st.session_state.selected_model_label == "Gemini 3.0 Pro":
                 st.session_state.is_fallback = False
             st.rerun()
@@ -207,10 +244,8 @@ domyslny_tryb={wybrany_tryb_kod}
     
     if prompt := st.chat_input("Wklej wsad..."):
         # 1. PARSOWANIE PZ STARTOWEGO
-        # Ustawiamy go TYLKO RAZ na początku sprawy (gdy jest None lub historia krótka)
-        # Dzięki temu nie nadpisujemy go w trakcie sesji (np. po SESJA WYNIK)
+        # Ustawiamy go TYLKO RAZ na początku sprawy (gdy jest None)
         input_pz = parse_pz(prompt)
-        
         if st.session_state.current_start_pz is None:
              st.session_state.current_start_pz = input_pz if input_pz else "PZ_START"
         
@@ -267,6 +302,5 @@ domyslny_tryb={wybrany_tryb_kod}
                             st.session_state.current_start_pz, 
                             end_pz
                         )
-                        
-                        # Po zalogowaniu czyścimy PZ startowy, żeby kolejna sprawa była "czysta"
+                        # Po zalogowaniu czyścimy PZ startowy
                         st.session_state.current_start_pz = None
