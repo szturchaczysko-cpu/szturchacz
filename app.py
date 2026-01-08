@@ -18,21 +18,19 @@ try:
 except: pass
 
 # --- INICJALIZACJA BAZY DANYCH ---
-if "db_status" not in st.session_state: st.session_state.db_status = "Inicjalizacja..."
 try:
     if not firebase_admin._apps:
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
         firebase_admin.initialize_app(creds)
     db = firestore.client()
-    st.session_state.db_status = "✅ Połączono z Firestore"
 except Exception as e:
-    st.session_state.db_status = f"❌ Błąd bazy: {str(e)}"
+    st.error(f"Błąd połączenia z bazą danych: {e}")
+    st.stop()
 
-# --- FUNKCJE POMOCNICZE ---
+# --- FUNKCJE POMOCNICZE (STATYSTYKI) ---
 def parse_pz(text):
     if not text: return None
-    # Szuka PZ+cyfra (np. PZ0, PZ12)
     match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
@@ -49,36 +47,23 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
     tz_pl = pytz.timezone('Europe/Warsaw')
     today_str = datetime.now(tz_pl).strftime("%Y-%m-%d")
     
-    status_msg = "Próba zapisu..."
-    
     try:
         doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
         
-        # 1. Zapisz sesję
+        # 1. Zapisz sesję (Zawsze)
         update_data = {"sessions_completed": firestore.Increment(1)}
         
-        # 2. Zapisz przejście (jeśli jest postęp)
+        # 2. Zapisz przejście (Tylko jeśli jest postęp)
         start_val = get_pz_value(start_pz)
         end_val = get_pz_value(end_pz)
         
         if start_val is not None and end_val is not None and end_val > start_val:
              transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
              update_data[transition_key] = firestore.Increment(1)
-             status_msg = f"✅ Zapisano sesję + przejście ({start_pz}->{end_pz})"
-        else:
-             status_msg = f"✅ Zapisano tylko sesję (brak postępu PZ)"
 
         doc_ref.set(update_data, merge=True)
-        
-        # 3. WERYFIKACJA (Odczyt kontrolny)
-        new_data = doc_ref.get().to_dict()
-        current_count = new_data.get("sessions_completed", 0)
-        status_msg += f" | Licznik w bazie: {current_count}"
-        
-    except Exception as e:
-        status_msg = f"❌ Błąd zapisu: {str(e)}"
-    
-    return status_msg
+    except Exception:
+        pass
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -106,9 +91,8 @@ if "selected_model_label" not in st.session_state: st.session_state.selected_mod
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
-# Zmienne diagnostyczne
-if "last_log_status" not in st.session_state: st.session_state.last_log_status = "Brak akcji"
-if "last_trigger_check" not in st.session_state: st.session_state.last_trigger_check = "Oczekiwanie..."
+# Inicjalizacja PZ startowego (domyślnie None, ustawiane przy pierwszym wsadzie)
+if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -127,18 +111,34 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
 with st.sidebar:
-    st.title("⚙️ Panel Sterowania")
-    st.info(st.session_state.db_status) # Status bazy na górze
+    if st.session_state.is_fallback:
+        st.markdown("<h1 style='text-align: center; font-size: 80px;'>🦖😲</h1>", unsafe_allow_html=True)
+        st.error("Limity 3.0 Pro wyczerpane! Działam na 1.5 Pro.")
     
-    st.radio("Model:", list(MODEL_MAP.keys()), key="selected_model_label")
+    st.title("⚙️ Panel Sterowania")
+    
+    # --- PRZYWRÓCONE INFORMACJE ---
+    st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    active_model_name = MODEL_MAP[st.session_state.selected_model_label]
+    if st.session_state.is_fallback: active_model_name = MODEL_MAP["Gemini 1.5 Pro (2.5)"]
+    
+    st.caption(f"🧠 Model: `{active_model_name}`")
+    st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
+    st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
+    st.markdown("---")
+    
     st.selectbox("Operator:", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator")
     st.selectbox("Grupa:", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
-    st.selectbox("Tryb:", ["Standard", "Kanał"], key="tryb_label")
+    
+    # Mapowanie nazw trybów na kody z prompta
+    TRYBY_DICT = {"Standard": "od_szturchacza", "Kanał": "kanal"}
+    tryb_label = st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()))
+    wybrany_tryb_kod = TRYBY_DICT[tryb_label]
     
     st.markdown("---")
     if st.button("🚀 Uruchom Czat", type="primary"):
@@ -148,20 +148,15 @@ with st.sidebar:
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.cache_handle = None
+            # Resetujemy PZ startowy przy nowej sprawie
+            st.session_state.current_start_pz = None
             if st.session_state.selected_model_label == "Gemini 3.0 Pro":
                 st.session_state.is_fallback = False
             st.rerun()
 
-    if st.button("🗑️ Reset"):
+    if st.button("🗑️ Reset Sesji"):
         st.session_state.clear()
         st.rerun()
-        
-    st.markdown("---")
-    st.markdown("### 🕵️ DIAGNOSTYKA")
-    st.caption("Co widzi system w ostatniej odpowiedzi:")
-    st.code(st.session_state.last_trigger_check, language="text")
-    st.caption("Status zapisu:")
-    st.code(st.session_state.last_log_status, language="text")
 
 st.title(f"🤖 Szturchacz")
 
@@ -169,15 +164,12 @@ if not st.session_state.chat_started:
     st.info("👈 Wybierz parametry i kliknij **'Uruchom Czat'**.")
 else:
     SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
-    # Uproszczony wybór trybu dla kodu
-    tryb_kod = "od_szturchacza" if st.session_state.tryb_label == "Standard" else "kanal"
-    
     parametry_startowe = f"""
 # PARAMETRY STARTOWE
 domyslny_operator={st.session_state.operator}
 domyslna_data={datetime.now().strftime("%d.%m")}
 Grupa_Operatorska={st.session_state.grupa}
-domyslny_tryb={tryb_kod}
+domyslny_tryb={wybrany_tryb_kod}
 """
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + "\n" + parametry_startowe
 
@@ -196,12 +188,14 @@ domyslny_tryb={tryb_kod}
             st.session_state[cache_key] = cache
             return genai.GenerativeModel.from_cached_content(cache)
 
-    st.title(f"🤖 Szturchacz ({st.session_state.operator})")
+    st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
+    # Autostart
     if len(st.session_state.messages) == 0:
         with st.spinner("Start..."):
             try:
-                m = get_or_create_model(MODEL_MAP[st.session_state.selected_model_label], FULL_PROMPT)
+                target_model = MODEL_MAP[st.session_state.selected_model_label]
+                m = get_or_create_model(target_model, FULL_PROMPT)
                 resp = m.start_chat().send_message("start")
                 st.session_state.messages.append({"role": "model", "content": resp.text})
             except Exception as e:
@@ -212,8 +206,13 @@ domyslny_tryb={tryb_kod}
             st.markdown(msg["content"])
     
     if prompt := st.chat_input("Wklej wsad..."):
-        start_pz = parse_pz(prompt)
-        st.session_state.current_start_pz = start_pz if start_pz else "PZ_START"
+        # 1. PARSOWANIE PZ STARTOWEGO
+        # Ustawiamy go TYLKO RAZ na początku sprawy (gdy jest None lub historia krótka)
+        # Dzięki temu nie nadpisujemy go w trakcie sesji (np. po SESJA WYNIK)
+        input_pz = parse_pz(prompt)
+        
+        if st.session_state.current_start_pz is None:
+             st.session_state.current_start_pz = input_pz if input_pz else "PZ_START"
         
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -258,26 +257,16 @@ domyslny_tryb={tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    # --- DIAGNOSTYKA TRIGGERA ---
-                    has_cop = 'cop#' in response_text.lower()
-                    has_c = 'c#' in response_text.lower()
-                    
-                    st.session_state.last_trigger_check = f"""
-                    COP# wykryto: {has_cop}
-                    C# wykryto: {has_c}
-                    PZ start: {st.session_state.current_start_pz}
-                    PZ koniec (surowy): {parse_pz(response_text)}
-                    """
-                    
-                    if has_cop and has_c:
+                    # --- LOGIKA ZAPISU STATYSTYK ---
+                    if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
                         end_pz = parse_pz(response_text)
                         if not end_pz: end_pz = "PZ_END"
                         
-                        # Logujemy i zapisujemy wynik w sesji, żeby wyświetlić w sidebarze
-                        status = log_session_and_transition(
+                        log_session_and_transition(
                             st.session_state.operator, 
                             st.session_state.current_start_pz, 
                             end_pz
                         )
-                        st.session_state.last_log_status = status
-                        st.rerun() # Odświeżamy, żeby zaktualizować sidebar
+                        
+                        # Po zalogowaniu czyścimy PZ startowy, żeby kolejna sprawa była "czysta"
+                        st.session_state.current_start_pz = None
