@@ -8,6 +8,7 @@ import time
 import json
 import re
 import pytz
+import hashlib # Do stabilnego identyfikowania promptu
 import firebase_admin
 from firebase_admin import credentials, firestore
 from streamlit_cookies_manager import EncryptedCookieManager
@@ -36,7 +37,7 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE POMOCNICZE (STATYSTYKI) ---
+# --- FUNKCJE POMOCNICZE ---
 def parse_pz(text):
     if not text: return None
     match = re.search(r'PZ\s*[:]*\s*(\d+)', text, re.IGNORECASE)
@@ -105,7 +106,9 @@ except:
     st.stop()
 
 def get_current_key(): return API_KEYS[st.session_state.key_index]
-def rotate_key(): st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
+def rotate_key(): 
+    st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
+    return st.session_state.key_index
 
 if st.session_state.is_fallback:
     st.markdown("""<style>[data-testid="stSidebar"] {background-color: #FF4B4B !important;} [data-testid="stSidebar"] * {color: white !important;}</style>""", unsafe_allow_html=True)
@@ -126,7 +129,6 @@ with st.sidebar:
         st.error("Limity wyczerpane! Tryb awaryjny.")
     
     st.title("⚙️ Panel Sterowania")
-    
     st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
@@ -163,6 +165,7 @@ with st.sidebar:
             st.session_state.chat_started = True
             st.session_state.is_fallback = False
             st.session_state.current_start_pz = None
+            # Czyścimy cache przy nowym starcie
             for k in list(st.session_state.keys()):
                 if k.startswith("cache_"): del st.session_state[k]
             st.rerun()
@@ -184,22 +187,31 @@ else:
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + parametry_startowe
 
     def get_or_create_model(model_name, full_prompt):
-        cache_key = f"cache_{model_name}_{hash(full_prompt)}_{st.session_state.key_index}"
-        if st.session_state.get(cache_key):
-            return genai.GenerativeModel.from_cached_content(st.session_state[cache_key])
+        # Stabilny hash promptu (MD5 nie zmienia się między restartami)
+        prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
+        # Cache jest unikalny dla: Klucza + Modelu + Treści Promptu
+        cache_key = f"cache_{st.session_state.key_index}_{model_name}_{prompt_hash}"
         
-        with st.spinner(f"Tworzenie cache dla klucza {st.session_state.key_index + 1}..."):
-            genai.configure(api_key=get_current_key())
-            cache = caching.CachedContent.create(
-                model=f'models/{model_name}',
-                system_instruction=full_prompt,
-                ttl=timedelta(hours=1)
-            )
-            st.session_state[cache_key] = cache
-            return genai.GenerativeModel.from_cached_content(cache)
+        if st.session_state.get(cache_key):
+            try:
+                return genai.GenerativeModel.from_cached_content(st.session_state[cache_key])
+            except:
+                # Jeśli cache wygasł w Google, usuwamy go z sesji i tworzymy nowy
+                del st.session_state[cache_key]
+        
+        # Tworzenie nowego cache
+        genai.configure(api_key=get_current_key())
+        cache = caching.CachedContent.create(
+            model=f'models/{model_name}',
+            system_instruction=full_prompt,
+            ttl=timedelta(hours=1)
+        )
+        st.session_state[cache_key] = cache
+        return genai.GenerativeModel.from_cached_content(cache)
 
     st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
+    # Autostart
     if len(st.session_state.messages) == 0:
         with st.spinner("Inicjalizacja..."):
             try:
@@ -242,7 +254,7 @@ else:
                         if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e):
                             attempts += 1
                             rotate_key()
-                            placeholder.warning(f"Limit klucza wyczerpany. Przełączam na klucz {st.session_state.key_index + 1}...")
+                            placeholder.warning(f"Limit klucza {attempts} wyczerpany. Przełączam...")
                             time.sleep(1)
                         else:
                             st.error(f"Błąd API: {e}")
