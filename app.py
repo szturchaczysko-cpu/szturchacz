@@ -14,7 +14,7 @@ from firebase_admin import credentials, firestore
 from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- 0. KONFIGURACJA ŚRODOWISKA ---
-st.set_page_config(page_title="Szturchacz AI", layout="wide")
+st.set_page_config(page_title="Szturchacz AI - MultiModel", layout="wide")
 try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
@@ -106,18 +106,23 @@ def rotate_key():
     return st.session_state.key_index
 
 # ==========================================
-# 🚀 KONFIGURACJA MODELI
+# 🚀 MAPA MODELI (ROZSZERZONA)
 # ==========================================
 MODEL_MAP = {
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro",
-    "Gemini 3.0 Pro": "gemini-3-pro-preview"
+    "Gemini 1.5 Pro (Stable)": "gemini-2.5-pro",
+    "Gemini 1.5 Pro 002 (Zoptymalizowany)": "gemini-2.5-pro-002",
+    "Gemini 3.0 Pro Preview": "gemini-3-pro-preview",
+    "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp",
+    "Gemini 1.5 Flash (Najszybszy)": "gemini-1.5-flash",
+    "Gemini 1.5 Flash 002": "gemini-1.5-flash-002",
+    "Gemini 3.0 Flash Preview": "gemini-3-flash-preview"
 }
 TEMPERATURE = 0.0
 
 # Inicjalizacja stanu
 if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
 if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
-if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 1.5 Pro (2.5)")
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 1.5 Pro (Stable)")
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
@@ -125,20 +130,18 @@ if "current_start_pz" not in st.session_state: st.session_state.current_start_pz
 with st.sidebar:
     st.title("⚙️ Panel Sterowania")
     
-    # Wybór modelu
-    st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    # --- WYBÓR MODELU (SELECTBOX) ---
+    st.selectbox("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
     
     st.markdown("---")
-    # --- NOWOŚĆ: RĘCZNA ZMIANA KLUCZA ---
+    # --- RĘCZNA ZMIANA KLUCZA ---
     st.subheader("🔑 Zarządzanie Kluczami")
     manual_key = st.checkbox("Ręczny wybór klucza")
     
     if manual_key:
-        # Tworzymy listę etykiet dla kluczy
         key_options = [f"Klucz {i+1} (...{API_KEYS[i][-4:]})" for i in range(len(API_KEYS))]
         selected_key_label = st.selectbox("Wybierz aktywny klucz:", key_options, index=st.session_state.key_index)
-        # Aktualizujemy indeks na podstawie wyboru
         new_index = key_options.index(selected_key_label)
         if new_index != st.session_state.key_index:
             st.session_state.key_index = new_index
@@ -198,7 +201,7 @@ else:
 
     def get_or_create_model(model_name, full_prompt):
         prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
-        # Cache jest unikalny dla: Klucza + Modelu + Treści Promptu
+        # Cache unikalny dla: Klucza + Modelu + Treści Promptu
         cache_key = f"cache_{st.session_state.key_index}_{model_name}_{prompt_hash}"
         
         if st.session_state.get(cache_key):
@@ -233,13 +236,12 @@ else:
             except Exception as e:
                 if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e):
                     attempts += 1
-                    # Jeśli nie jesteśmy w trybie ręcznym, rotujemy automatycznie
                     if not manual_key:
                         rotate_key()
                         st.toast(f"🔄 Automatyczna rotacja: Klucz {st.session_state.key_index + 1}")
                         time.sleep(1)
                     else:
-                        return "❌ Limit wybranego klucza wyczerpany. Zmień klucz ręcznie w panelu bocznym.", False
+                        return f"❌ Limit wybranego klucza ({st.session_state.key_index + 1}) wyczerpany. Zmień klucz ręcznie.", False
                 else:
                     return f"Błąd API: {str(e)}", False
         
