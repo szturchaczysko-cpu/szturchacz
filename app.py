@@ -16,9 +16,8 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- INICJALIZACJA BAZY DANYCH (POPRAWIONA) ---
+# --- INICJALIZACJA BAZY DANYCH ---
 try:
-    # Sprawdzamy, czy aplikacja nie jest już połączona
     if not firebase_admin._apps:
         creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
         creds = credentials.Certificate(creds_dict)
@@ -28,43 +27,62 @@ except Exception as e:
     st.error(f"Błąd połączenia z bazą danych: {e}")
     st.stop()
 
-# --- FUNKCJE DO STATYSTYK ---
+# --- FUNKCJE DO STATYSTYK (POPRAWIONE) ---
 def parse_pz(text):
+    """
+    Szuka ciągu PZ i cyfry.
+    Działa dla: 'PZ0', 'PZ 1', 'PZ: 2', 'pz4'.
+    Zwraca sformatowany string np. 'PZ0'.
+    """
     if not text: return None
-    match = re.search(r'PZ\s*:\s*(PZ\d+)', text, re.IGNORECASE)
+    match = re.search(r'PZ\s*[:]*\s*(\d+)', text, re.IGNORECASE)
     if match:
-        return match.group(1)
+        return f"PZ{match.group(1)}"
     return None
 
-def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
-    st.session_state.debug_info = {
-        "start_pz_detected": start_pz,
-        "end_pz_detected": end_pz,
-        "full_response_snippet": response_text_for_debug[:500]
-    }
-    try:
-        today_str = datetime.now().strftime("%Y-%m-%d")
-        doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
-        update_data = {"sessions_completed": firestore.Increment(1)}
-        if start_pz and end_pz:
-            start_val = get_pz_value(start_pz)
-            end_val = get_pz_value(end_pz)
-            if start_val is not None and end_val is not None and end_val > start_val:
-                transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
-                update_data[transition_key] = firestore.Increment(1)
-        doc_ref.set(update_data, merge=True)
-    except Exception:
-        pass
-
 def get_pz_value(pz_string):
+    """Zamienia PZ na liczbę do porównania."""
     if pz_string == "PZ_START": return -1
     if pz_string == "PZ_END": return 999
+    
     if pz_string and pz_string.startswith("PZ"):
         try:
+            # Wyciągamy wszystko po "PZ" i zamieniamy na int
             return int(pz_string[2:])
         except (ValueError, TypeError):
             return None
     return None
+
+def log_session_and_transition(operator_name, start_pz, end_pz, response_text_for_debug):
+    # Debugger w sesji
+    st.session_state.debug_info = {
+        "start_pz_raw": start_pz,
+        "end_pz_raw": end_pz,
+        "timestamp": datetime.now().strftime("%H:%M:%S")
+    }
+
+    try:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        doc_ref = db.collection("stats").document(today_str).collection("operators").document(operator_name)
+        
+        # 1. Zawsze logujemy sesję (bo wygenerowano COP#)
+        update_data = {"sessions_completed": firestore.Increment(1)}
+        
+        # 2. Logujemy przejście TYLKO jeśli jest postęp
+        start_val = get_pz_value(start_pz)
+        end_val = get_pz_value(end_pz)
+        
+        if start_val is not None and end_val is not None and end_val > start_val:
+            transition_key = f"pz_transitions.{start_pz}_to_{end_pz}"
+            update_data[transition_key] = firestore.Increment(1)
+            st.session_state.debug_info["status"] = "ZALOGOWANO PRZEJŚCIE ✅"
+        else:
+            st.session_state.debug_info["status"] = "BRAK POSTĘPU (Tylko sesja) ⚠️"
+
+        doc_ref.set(update_data, merge=True)
+        
+    except Exception as e:
+        st.session_state.debug_info["error"] = str(e)
 
 # ==========================================
 # 🔒 BRAMKA BEZPIECZEŃSTWA
@@ -72,8 +90,10 @@ def get_pz_value(pz_string):
 def check_password():
     if st.session_state.get("password_correct"):
         return True
+    
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
+    
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
@@ -97,6 +117,7 @@ if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
 if "debug_info" not in st.session_state: st.session_state.debug_info = {}
+if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = "PZ_START"
 
 try:
     API_KEYS = st.secrets["API_KEYS"]
@@ -115,7 +136,7 @@ if st.session_state.is_fallback:
 # ==========================================
 MODEL_MAP = {
     "Gemini 3.0 Pro": "gemini-3-pro-preview",
-    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro"
+    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro"
 }
 TEMPERATURE = 0.0
 
@@ -209,7 +230,9 @@ domyslny_tryb={wybrany_tryb_kod}
             st.markdown(msg["content"])
     
     if prompt := st.chat_input("Wklej wsad..."):
+        # 1. Parsujemy PZ ze wsadu operatora
         start_pz = parse_pz(prompt)
+        # Jeśli znaleziono PZ, używamy go. Jeśli nie, to znaczy że to nowa sprawa (PZ_START)
         st.session_state.current_start_pz = start_pz if start_pz else "PZ_START"
         
         with st.chat_message("user"):
@@ -262,6 +285,8 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
+                    # --- TRIGGER LOGOWANIA ---
+                    # Sprawdzamy czy są tagi kończące sesję (case-insensitive)
                     if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
                         end_pz = parse_pz(response_text)
                         if not end_pz:
