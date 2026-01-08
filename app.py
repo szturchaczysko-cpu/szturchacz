@@ -127,7 +127,6 @@ with st.sidebar:
     st.caption(f"🧠 Model: `{active_model_id}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
     
-    # Ręczna zmiana klucza
     manual_key = st.checkbox("Ręczny wybór klucza")
     if manual_key:
         key_options = [f"Klucz {i+1} (...{API_KEYS[i][-4:]})" for i in range(len(API_KEYS))]
@@ -161,10 +160,8 @@ with st.sidebar:
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.current_start_pz = None
-            # Losujemy klucz na nową sprawę
             if not manual_key:
                 st.session_state.key_index = random.randint(0, len(API_KEYS) - 1)
-            # Czyścimy cache w sesji
             for k in list(st.session_state.keys()):
                 if k.startswith("cache_"): del st.session_state[k]
             st.rerun()
@@ -196,7 +193,6 @@ else:
             except: del st.session_state[cache_key]
         
         genai.configure(api_key=get_current_key())
-        # Cache tylko dla 1.5 Pro
         if "gemini-1.5-pro" in model_name:
             with st.spinner(f"Tworzenie cache dla klucza {st.session_state.key_index + 1}..."):
                 cache = caching.CachedContent.create(model=f'models/{model_name}', system_instruction=full_prompt, ttl=timedelta(hours=1))
@@ -229,42 +225,57 @@ else:
         return "❌ Wszystkie klucze wyczerpane.", False
 
     # --- LOGIKA EKRANU ---
+    # Jeśli nie ma żadnych wiadomości, pokazujemy pole tekstowe na pierwszy wsad
     if len(st.session_state.messages) == 0:
-        # KROK 1: Pierwszy wsad (Wsad-First)
         st.subheader(f"📥 Pierwszy wsad ({st.session_state.operator})")
         wsad_input = st.text_area("Wklej tabelkę i kopertę sprawy:", height=350, placeholder="Wklej dane tutaj...")
         if st.button("🚀 Rozpocznij analizę", type="primary"):
             if wsad_input:
+                # Ustalanie PZ startowego
                 input_pz = parse_pz(wsad_input)
                 st.session_state.current_start_pz = input_pz if input_pz else "PZ_START"
-                st.session_state.messages.append({"role": "user", "content": wsad_input})
                 
+                # Dodajemy wsad do historii i wysyłamy
+                st.session_state.messages.append({"role": "user", "content": wsad_input})
                 with st.spinner("Analiza..."):
                     res_text, success = call_gemini_with_rotation([], wsad_input)
                     if success:
                         st.session_state.messages.append({"role": "model", "content": res_text})
-                        st.rerun()
-                    else: st.error(res_text)
-            else: st.error("Wsad nie może być pusty!")
+                        st.rerun() # Przeładowujemy, żeby wejść w tryb czatu
+                    else:
+                        st.error(res_text)
+                        # Usuwamy wsad z historii, żeby nie blokować widoku przy błędzie
+                        st.session_state.messages = []
+            else:
+                st.error("Wsad nie może być pusty!")
+    
+    # Jeśli są już wiadomości, pokazujemy historię i chat_input
     else:
-        # KROK 2: Tryb Czatu (dla sesji wielokrokowych)
         st.subheader(f"💬 Rozmowa: {st.session_state.operator}")
         for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]): st.markdown(msg["content"])
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
         
         if prompt := st.chat_input("Odpowiedz AI (np. SESJA WYNIK)..."):
-            with st.chat_message("user"): st.markdown(prompt)
+            with st.chat_message("user"):
+                st.markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
             
             with st.chat_message("model"):
                 with st.spinner("Analizuję..."):
-                    history_api = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
+                    # Budujemy historię dla API (bez ostatniej wiadomości, bo idzie w send_message)
+                    history_api = []
+                    for m in st.session_state.messages[:-1]:
+                        history_api.append({"role": m["role"], "parts": [m["content"]]})
+                    
                     res_text, success = call_gemini_with_rotation(history_api, prompt)
                     if success:
                         st.markdown(res_text)
                         st.session_state.messages.append({"role": "model", "content": res_text})
-                        # Logowanie statystyk przy finale
+                        
+                        # Logowanie statystyk przy finale (COP# + C#)
                         if 'cop#' in res_text.lower() and 'c#' in res_text.lower():
                             end_pz = parse_pz(res_text)
                             log_session_and_transition(st.session_state.operator, st.session_state.current_start_pz, end_pz if end_pz else "PZ_END")
-                    else: st.error(res_text)
+                    else:
+                        st.error(res_text)
