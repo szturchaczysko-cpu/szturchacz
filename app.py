@@ -18,8 +18,7 @@ try:
     locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- MENEDŻER CIASTECZEK (PRZYWRÓCONY) ---
-# Wymaga COOKIE_PASSWORD w secrets.toml
+# --- MENEDŻER CIASTECZEK ---
 cookies = EncryptedCookieManager(
     password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
 )
@@ -40,7 +39,6 @@ except Exception as e:
 # --- FUNKCJE DO STATYSTYK ---
 def parse_pz(text):
     if not text: return None
-    # Szuka PZ+cyfra (np. PZ0, PZ12)
     match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
@@ -76,25 +74,21 @@ def log_session_and_transition(operator_name, start_pz, end_pz):
         pass
 
 # ==========================================
-# 🔒 BRAMKA BEZPIECZEŃSTWA (Z ZAPAMIĘTYWANIEM)
+# 🔒 BRAMKA BEZPIECZEŃSTWA
 # ==========================================
 def check_password():
-    # 1. Sprawdź sesję bieżącą
     if st.session_state.get("password_correct"):
         return True
-    
-    # 2. Sprawdź ciasteczko (dla Chrome)
     if cookies.get("password_correct") == "true":
         st.session_state.password_correct = True
         return True
-
+    
     st.header("🔒 Dostęp chroniony (Szturchacz)")
     password_input = st.text_input("Podaj hasło dostępu:", type="password", key="password_input")
     
     if st.button("Zaloguj"):
         if st.session_state.password_input == st.secrets["APP_PASSWORD"]:
             st.session_state.password_correct = True
-            # Zapisz w ciasteczku
             cookies['password_correct'] = 'true'
             cookies.save()
             st.rerun()
@@ -110,11 +104,9 @@ if not check_password():
 # ==========================================
 if "key_index" not in st.session_state: st.session_state.key_index = 0
 if "is_fallback" not in st.session_state: st.session_state.is_fallback = False
-# Próba odczytu z ciasteczek, jeśli brak w sesji
 if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
 if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
 if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 3.0 Pro")
-
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "cache_handle" not in st.session_state: st.session_state.cache_handle = None
@@ -148,8 +140,13 @@ with st.sidebar:
     
     st.title("⚙️ Panel Sterowania")
     
-    # Wybór modelu (zapisywany w ciasteczku przy uruchomieniu)
-    st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
+    def save_settings_to_cookies():
+        cookies['operator'] = st.session_state.operator
+        cookies['grupa'] = st.session_state.grupa
+        cookies['selected_model_label'] = st.session_state.selected_model_label
+        cookies.save()
+
+    st.radio("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label", on_change=save_settings_to_cookies)
     active_model_name = MODEL_MAP[st.session_state.selected_model_label]
     if st.session_state.is_fallback: active_model_name = MODEL_MAP["Gemini 1.5 Pro (2.5)"]
     
@@ -158,10 +155,12 @@ with st.sidebar:
     st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
     st.markdown("---")
     
-    st.selectbox("Operator:", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia"], key="operator")
-    st.selectbox("Grupa:", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
+    # --- ZAKTUALIZOWANA LISTA OPERATORÓW ---
+    OPERATORS_LIST = ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"]
     
-    # --- PRZYWRÓCONE PEŁNE TRYBY ---
+    st.selectbox("Operator:", OPERATORS_LIST, key="operator", on_change=save_settings_to_cookies)
+    st.selectbox("Grupa:", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa", on_change=save_settings_to_cookies)
+    
     TRYBY_DICT = {
         "Standard (Panel + Koperta)": "od_szturchacza",
         "WhatsApp (Rolka + Panel)": "WA",
@@ -176,7 +175,6 @@ with st.sidebar:
         if not st.session_state.operator or not st.session_state.grupa:
             st.error("Wybierz Operatora i Grupę!")
         else:
-            # ZAPIS DO CIASTECZEK (Dla Chrome)
             cookies['operator'] = st.session_state.operator
             cookies['grupa'] = st.session_state.grupa
             cookies['selected_model_label'] = st.session_state.selected_model_label
@@ -193,6 +191,8 @@ with st.sidebar:
 
     if st.button("🗑️ Reset Sesji"):
         st.session_state.clear()
+        cookies.clear()
+        cookies.save()
         st.rerun()
 
 st.title(f"🤖 Szturchacz")
@@ -243,8 +243,6 @@ domyslny_tryb={wybrany_tryb_kod}
             st.markdown(msg["content"])
     
     if prompt := st.chat_input("Wklej wsad..."):
-        # 1. PARSOWANIE PZ STARTOWEGO
-        # Ustawiamy go TYLKO RAZ na początku sprawy (gdy jest None)
         input_pz = parse_pz(prompt)
         if st.session_state.current_start_pz is None:
              st.session_state.current_start_pz = input_pz if input_pz else "PZ_START"
@@ -292,7 +290,6 @@ domyslny_tryb={wybrany_tryb_kod}
                     placeholder.markdown(response_text)
                     st.session_state.messages.append({"role": "model", "content": response_text})
                     
-                    # --- LOGIKA ZAPISU STATYSTYK ---
                     if 'cop#' in response_text.lower() and 'c#' in response_text.lower():
                         end_pz = parse_pz(response_text)
                         if not end_pz: end_pz = "PZ_END"
@@ -302,5 +299,4 @@ domyslny_tryb={wybrany_tryb_kod}
                             st.session_state.current_start_pz, 
                             end_pz
                         )
-                        # Po zalogowaniu czyścimy PZ startowy
                         st.session_state.current_start_pz = None
