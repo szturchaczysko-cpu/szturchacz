@@ -109,7 +109,7 @@ def rotate_key():
 # 🚀 KONFIGURACJA MODELI
 # ==========================================
 MODEL_MAP = {
-    "Gemini 1.5 Pro (2.5)": "gemini-1.5-pro",
+    "Gemini 1.5 Pro (2.5)": "gemini-2.5-pro",
     "Gemini 3.0 Pro": "gemini-3-pro-preview"
 }
 TEMPERATURE = 0.0
