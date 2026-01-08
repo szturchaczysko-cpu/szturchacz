@@ -110,7 +110,7 @@ def rotate_key():
 # ==========================================
 MODEL_MAP = {
     "Gemini 1.5 Pro (Stable)": "gemini-2.5-pro",
-    "Gemini 1.5 Pro 002 (Zoptymalizowany)": "gemini-2.5-pro-002",
+    "Gemini 1.5 Pro 002 (Zoptymalizowany)": "gemini-1.5-pro-002",
     "Gemini 3.0 Pro Preview": "gemini-3-pro-preview",
     "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp",
     "Gemini 1.5 Flash (Najszybszy)": "gemini-1.5-flash",
