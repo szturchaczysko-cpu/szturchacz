@@ -106,23 +106,29 @@ def rotate_key():
     return st.session_state.key_index
 
 # ==========================================
-# 🚀 MAPA MODELI (ROZSZERZONA)
+# 🚀 MAPA MODELI
 # ==========================================
+# Modele, które OFICJALNIE obsługują Context Caching (stan na 2026)
+MODELS_WITH_CACHE_SUPPORT = [
+    "gemini-1.5-pro-002", 
+    "gemini-1.5-flash-002", 
+    "gemini-1.5-pro", 
+    "gemini-1.5-flash"
+]
+
 MODEL_MAP = {
-    "Gemini 1.5 Pro (Stable)": "gemini-2.5-pro",
-    "Gemini 1.5 Pro 002 (Zoptymalizowany)": "gemini-1.5-pro-002",
-    "Gemini 3.0 Pro Preview": "gemini-3-pro-preview",
-    "Gemini 2.0 Flash Exp": "gemini-2.0-flash-exp",
-    "Gemini 1.5 Flash (Najszybszy)": "gemini-1.5-flash",
-    "Gemini 1.5 Flash 002": "gemini-1.5-flash-002",
-    "Gemini 3.0 Flash Preview": "gemini-3-flash-preview"
+    "Gemini 1.5 Pro 002 (Cache OK)": "gemini-1.5-pro-002",
+    "Gemini 1.5 Flash 002 (Cache OK)": "gemini-1.5-flash-002",
+    "Gemini 3.0 Pro Preview (No Cache)": "gemini-3-pro-preview",
+    "Gemini 2.0 Flash Exp (No Cache)": "gemini-2.0-flash-exp",
+    "Gemini 3.0 Flash Preview (No Cache)": "gemini-3-flash-preview"
 }
 TEMPERATURE = 0.0
 
 # Inicjalizacja stanu
 if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
 if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
-if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 1.5 Pro (Stable)")
+if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 1.5 Pro 002 (Cache OK)")
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
@@ -130,12 +136,10 @@ if "current_start_pz" not in st.session_state: st.session_state.current_start_pz
 with st.sidebar:
     st.title("⚙️ Panel Sterowania")
     
-    # --- WYBÓR MODELU (SELECTBOX) ---
     st.selectbox("Wybierz model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
     
     st.markdown("---")
-    # --- RĘCZNA ZMIANA KLUCZA ---
     st.subheader("🔑 Zarządzanie Kluczami")
     manual_key = st.checkbox("Ręczny wybór klucza")
     
@@ -148,8 +152,8 @@ with st.sidebar:
             st.toast(f"Przełączono na klucz {new_index + 1}")
     else:
         st.caption(f"Aktywny klucz: {st.session_state.key_index + 1} / {len(API_KEYS)}")
-        st.caption(f"ID: `...{get_current_key()[-4:]}`")
 
+    st.caption(f"🧠 Model: `{active_model_id}`")
     st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
     st.markdown("---")
     
@@ -174,11 +178,9 @@ with st.sidebar:
             cookies['grupa'] = st.session_state.grupa
             cookies['selected_model_label'] = st.session_state.selected_model_label
             cookies.save()
-            
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.current_start_pz = None
-            # Czyścimy cache w sesji przy nowym starcie
             for k in list(st.session_state.keys()):
                 if k.startswith("cache_"): del st.session_state[k]
             st.rerun()
@@ -200,8 +202,18 @@ else:
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + parametry_startowe
 
     def get_or_create_model(model_name, full_prompt):
+        # Sprawdzamy, czy model w ogóle obsługuje cache
+        if model_name not in MODELS_WITH_CACHE_SUPPORT:
+            # Jeśli nie obsługuje - zwracamy zwykły model bez logiki cache
+            genai.configure(api_key=get_current_key())
+            return genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=full_prompt,
+                generation_config={"temperature": TEMPERATURE}
+            )
+
+        # Jeśli obsługuje - jedziemy z logiką cache
         prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
-        # Cache unikalny dla: Klucza + Modelu + Treści Promptu
         cache_key = f"cache_{st.session_state.key_index}_{model_name}_{prompt_hash}"
         
         if st.session_state.get(cache_key):
@@ -211,20 +223,20 @@ else:
                 del st.session_state[cache_key]
         
         genai.configure(api_key=get_current_key())
-        cache = caching.CachedContent.create(
-            model=f'models/{model_name}',
-            system_instruction=full_prompt,
-            ttl=timedelta(hours=1)
-        )
-        st.session_state[cache_key] = cache
-        return genai.GenerativeModel.from_cached_content(cache)
+        with st.spinner("Tworzenie cache..."):
+            cache = caching.CachedContent.create(
+                model=f'models/{model_name}',
+                system_instruction=full_prompt,
+                ttl=timedelta(hours=1)
+            )
+            st.session_state[cache_key] = cache
+            return genai.GenerativeModel.from_cached_content(cache)
 
     st.title(f"🤖 Szturchacz ({st.session_state.operator} / {st.session_state.grupa})")
 
     def call_gemini_with_rotation(history, user_input):
         max_retries = len(API_KEYS)
         attempts = 0
-        
         while attempts < max_retries:
             try:
                 genai.configure(api_key=get_current_key())
@@ -232,19 +244,17 @@ else:
                 chat = model.start_chat(history=history)
                 response = chat.send_message(user_input)
                 return response.text, True
-            
             except Exception as e:
                 if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e):
                     attempts += 1
                     if not manual_key:
                         rotate_key()
-                        st.toast(f"🔄 Automatyczna rotacja: Klucz {st.session_state.key_index + 1}")
+                        st.toast(f"🔄 Rotacja: Klucz {st.session_state.key_index + 1}")
                         time.sleep(1)
                     else:
-                        return f"❌ Limit wybranego klucza ({st.session_state.key_index + 1}) wyczerpany. Zmień klucz ręcznie.", False
+                        return f"❌ Limit klucza {st.session_state.key_index + 1} wyczerpany.", False
                 else:
                     return f"Błąd API: {str(e)}", False
-        
         return "❌ Wszystkie klucze wyczerpane.", False
 
     # Autostart
@@ -254,8 +264,7 @@ else:
             if success:
                 st.session_state.messages.append({"role": "model", "content": res_text})
                 st.rerun()
-            else:
-                st.error(res_text)
+            else: st.error(res_text)
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
@@ -272,7 +281,6 @@ else:
             with st.spinner("Analizuję..."):
                 history_api = [{"role": "user", "parts": ["start"]}] + [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
                 res_text, success = call_gemini_with_rotation(history_api, prompt)
-                
                 if success:
                     st.markdown(res_text)
                     st.session_state.messages.append({"role": "model", "content": res_text})
@@ -280,5 +288,4 @@ else:
                         end_pz = parse_pz(res_text)
                         log_session_and_transition(st.session_state.operator, st.session_state.current_start_pz, end_pz if end_pz else "PZ_END")
                         st.session_state.current_start_pz = None
-                else:
-                    st.error(res_text)
+                else: st.error(res_text)
