@@ -104,7 +104,7 @@ def rotate_key():
 # 🚀 KONFIGURACJA MODELI
 # ==========================================
 MODEL_MAP = {
-    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-2.5-pro",
+    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-1.5-pro",
     "Gemini 3.0 Pro - Chirurgiczny": "gemini-3-pro-preview"
 }
 TEMPERATURE = 0.0
@@ -225,45 +225,47 @@ else:
         return "❌ Wszystkie klucze wyczerpane.", False
 
     # --- LOGIKA EKRANU ---
-    # Jeśli nie ma żadnych wiadomości, pokazujemy pole tekstowe na pierwszy wsad
     if len(st.session_state.messages) == 0:
-        st.subheader(f"📥 Pierwszy wsad ({st.session_state.operator})")
-        wsad_input = st.text_area("Wklej tabelkę i kopertę sprawy:", height=350, placeholder="Wklej dane tutaj...")
+        st.subheader(f"📥 Przygotowanie wsadu ({st.session_state.operator})")
+        
+        # --- DYNAMICZNE INSTRUKCJE ---
+        if wybrany_tryb_kod == "od_szturchacza":
+            st.info("💡 **Tryb Standard:** Wklej tylko **Tabelkę z panelu** oraz **Kopertę**. O rolkę rozmowy poproszę później, jeśli będzie potrzebna.")
+        else:
+            st.warning(f"💡 **Tryb {st.session_state.tryb_label}:** Wklej **Tabelkę**, **Kopertę** oraz **Rolkę rozmowy**.")
+            st.markdown(f"Użyj poniższego nagłówka przed wklejeniem treści rozmowy:")
+            st.code(f"ROLKA_START_{wybrany_tryb_kod}")
+
+        wsad_input = st.text_area("Wklej dane tutaj:", height=350, placeholder="362352 2026-01-02...")
+        
         if st.button("🚀 Rozpocznij analizę", type="primary"):
             if wsad_input:
-                # Ustalanie PZ startowego
                 input_pz = parse_pz(wsad_input)
                 st.session_state.current_start_pz = input_pz if input_pz else "PZ_START"
-                
-                # Dodajemy wsad do historii i wysyłamy
                 st.session_state.messages.append({"role": "user", "content": wsad_input})
+                
                 with st.spinner("Analiza..."):
                     res_text, success = call_gemini_with_rotation([], wsad_input)
                     if success:
                         st.session_state.messages.append({"role": "model", "content": res_text})
-                        st.rerun() # Przeładowujemy, żeby wejść w tryb czatu
+                        st.rerun()
                     else:
                         st.error(res_text)
-                        # Usuwamy wsad z historii, żeby nie blokować widoku przy błędzie
                         st.session_state.messages = []
             else:
                 st.error("Wsad nie może być pusty!")
     
-    # Jeśli są już wiadomości, pokazujemy historię i chat_input
     else:
         st.subheader(f"💬 Rozmowa: {st.session_state.operator}")
         for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
+            with st.chat_message(msg["role"]): st.markdown(msg["content"])
         
         if prompt := st.chat_input("Odpowiedz AI (np. SESJA WYNIK)..."):
-            with st.chat_message("user"):
-                st.markdown(prompt)
+            with st.chat_message("user"): st.markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
             
             with st.chat_message("model"):
                 with st.spinner("Analizuję..."):
-                    # Budujemy historię dla API (bez ostatniej wiadomości, bo idzie w send_message)
                     history_api = []
                     for m in st.session_state.messages[:-1]:
                         history_api.append({"role": m["role"], "parts": [m["content"]]})
@@ -272,8 +274,6 @@ else:
                     if success:
                         st.markdown(res_text)
                         st.session_state.messages.append({"role": "model", "content": res_text})
-                        
-                        # Logowanie statystyk przy finale (COP# + C#)
                         if 'cop#' in res_text.lower() and 'c#' in res_text.lower():
                             end_pz = parse_pz(res_text)
                             log_session_and_transition(st.session_state.operator, st.session_state.current_start_pz, end_pz if end_pz else "PZ_END")
