@@ -20,7 +20,7 @@ if not firebase_admin._apps:
     firebase_admin.initialize_app(creds)
 db = firestore.client()
 
-# --- CIASTECZKA ---
+# --- CIASTECZEK ---
 cookies = EncryptedCookieManager(password=st.secrets.get("COOKIE_PASSWORD", "dev_pass"))
 if not cookies.ready(): st.stop()
 
@@ -31,43 +31,37 @@ def parse_pz(text):
     if match: return match.group(1).upper()
     return None
 
-def get_pz_value(pz_string):
-    if pz_string == "PZ_START": return -1
-    if pz_string == "PZ_END": return 999
-    if pz_string and pz_string.startswith("PZ"):
-        try: return int(pz_string[2:])
-        except: return None
-    return None
-
 def log_stats(op_name, start_pz, end_pz, key_idx):
     tz_pl = pytz.timezone('Europe/Warsaw')
     today = datetime.now(tz_pl).strftime("%Y-%m-%d")
-    # 1. Sesje i Przejścia
     doc_ref = db.collection("stats").document(today).collection("operators").document(op_name)
+    
+    # Zliczamy sesję
     upd = {"sessions_completed": firestore.Increment(1)}
-    s_v, e_v = get_pz_value(start_pz), get_pz_value(end_pz)
-    if s_v is not None and e_v is not None and e_v > s_v:
+    
+    # Zliczamy KAŻDE przejście (nawet PZ5 -> PZ5)
+    if start_pz and end_pz:
         upd[f"pz_transitions.{start_pz}_to_{end_pz}"] = firestore.Increment(1)
-        # Jeśli diament (PZ6) -> inkrementuj licznik globalny
+        
+        # Jeśli diament (osiągnięto PZ6) -> licznik globalny
         if end_pz == "PZ6":
             db.collection("global_stats").document("totals").collection("operators").document(op_name).set({
                 "total_diamonds": firestore.Increment(1)
             }, merge=True)
+            
     doc_ref.set(upd, merge=True)
-    # 2. Zużycie klucza
     db.collection("key_usage").document(today).set({str(key_idx + 1): firestore.Increment(1)}, merge=True)
 
 # ==========================================
-# 🔒 LOGOWANIE PRZEZ UNIKALNE HASŁO
+# 🔒 LOGOWANIE PRZEZ HASŁO
 # ==========================================
 if "operator" not in st.session_state: st.session_state.operator = cookies.get("op_name", "")
 if "password_correct" not in st.session_state: st.session_state.password_correct = cookies.get("auth", "") == "ok"
 
 if not st.session_state.password_correct:
-    st.header("🔒 Zaloguj się do Szturchacza")
+    st.header("🔒 Zaloguj się")
     input_pwd = st.text_input("Wpisz swoje hasło:", type="password")
     if st.button("Wejdź"):
-        # Szukamy operatora po haśle w bazie
         query = db.collection("operator_configs").where("password", "==", input_pwd).limit(1).get()
         if query:
             op_doc = query[0]
@@ -77,12 +71,11 @@ if not st.session_state.password_correct:
             cookies["auth"] = "ok"
             cookies.save()
             st.rerun()
-        else:
-            st.error("Błędne hasło!")
+        else: st.error("Błędne hasło!")
     st.stop()
 
 # ==========================================
-# 🔑 POBIERANIE CONFIGU I DIAMENTÓW
+# 🔑 CONFIG I DIAMENTY
 # ==========================================
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
@@ -103,15 +96,9 @@ all_time_diamonds = global_data.get("total_diamonds", 0)
 # ==========================================
 with st.sidebar:
     st.title(f"👤 {op_name}")
-    
-    # --- DIAMENTY ---
-    st.markdown(f"### 💎 Zamówieni kurierzy")
-    c1, c2 = st.columns(2)
-    c1.metric("Dzisiaj", today_diamonds)
-    c2.metric("Łącznie", all_time_diamonds)
+    st.markdown(f"### 💎 Zamówieni kurierzy\n**Dziś:** {today_diamonds} | **Łącznie:** {all_time_diamonds}")
     st.markdown("---")
 
-    # --- WIADOMOŚĆ OD ADMINA ---
     admin_msg = cfg.get("admin_message", "")
     msg_read = cfg.get("message_read", False)
     if admin_msg:
@@ -121,19 +108,14 @@ with st.sidebar:
                 cfg_ref.update({"message_read": True})
                 st.rerun()
         else:
-            with st.expander("📩 Poprzednia wiadomość"):
-                st.write(admin_msg)
+            with st.expander("📩 Wiadomość od Admina"): st.write(admin_msg)
 
     st.markdown("---")
-    # Model i Klucz
-    model_label = st.radio("Model:", ["Gemini 1.5 Pro (2.5)", "Gemini 3.0 Pro"], 
-                           index=0 if cookies.get("mod") != "3.0" else 1)
+    model_label = st.radio("Model:", ["Gemini 1.5 Pro (2.5)", "Gemini 3.0 Pro"], index=0 if cookies.get("mod") != "3.0" else 1)
     cookies["mod"] = "1.5" if "1.5" in model_label else "3.0"
     cookies.save()
-    
     active_model = "gemini-1.5-pro" if "1.5" in model_label else "gemini-3-pro-preview"
     
-    # Klucz stały vs rotator
     fixed_key_idx = cfg.get("assigned_key_index", 0)
     if fixed_key_idx > 0:
         st.session_state.key_index = fixed_key_idx - 1
@@ -160,8 +142,21 @@ st.title("🤖 Szturchacz AI")
 
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 
+def get_or_create_model(model_name, full_prompt):
+    prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
+    cache_key = f"cache_{st.session_state.key_index}_{model_name}_{prompt_hash}"
+    if st.session_state.get(cache_key):
+        try: return genai.GenerativeModel.from_cached_content(st.session_state[cache_key])
+        except: del st.session_state[cache_key]
+    genai.configure(api_key=API_KEYS[st.session_state.key_index])
+    if "gemini-1.5-pro" in model_name:
+        with st.spinner("Tworzenie cache..."):
+            cache = caching.CachedContent.create(model=f'models/{model_name}', system_instruction=full_prompt, ttl=timedelta(hours=1))
+            st.session_state[cache_key] = cache
+            return genai.GenerativeModel.from_cached_content(cache)
+    return genai.GenerativeModel(model_name=model_name, system_instruction=full_prompt)
+
 if not st.session_state.chat_started:
-    st.info(f"Witaj {op_name}! Wklej wsad poniżej, aby zacząć.")
     wsad = st.text_area("Wklej tabelkę i kopertę:", height=300)
     if st.button("🚀 Analizuj", type="primary"):
         if wsad:
@@ -169,25 +164,34 @@ if not st.session_state.chat_started:
             st.session_state.messages = [{"role": "user", "content": wsad}]
             st.session_state.chat_started = True
             
-            # Wywołanie API
             SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT"]
             FULL_PROMPT = SYSTEM_PROMPT + f"\ndomyslny_operator={op_name}\nGrupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}"
             
             with st.spinner("Analiza..."):
                 API_KEYS = st.secrets["API_KEYS"]
-                genai.configure(api_key=API_KEYS[st.session_state.key_index])
-                model = genai.GenerativeModel(active_model, system_instruction=FULL_PROMPT)
                 try:
-                    resp = model.generate_content(wsad, generation_config={"temperature": 0.0})
+                    model = get_or_create_model(active_model, FULL_PROMPT)
+                    chat = model.start_chat(history=[])
+                    resp = chat.send_message(wsad, generation_config={"temperature": 0.0})
                     st.session_state.messages.append({"role": "model", "content": resp.text})
                     log_stats(op_name, st.session_state.current_start_pz, parse_pz(resp.text) or "PZ_END", st.session_state.key_index)
                     st.rerun()
-                except Exception as e:
-                    st.error(f"Błąd: {e}")
+                except Exception as e: st.error(f"Błąd: {e}")
 else:
     for m in st.session_state.messages:
         with st.chat_message(m["role"]): st.markdown(m["content"])
     
     if prompt := st.chat_input("Odpowiedz..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        st.rerun()
+        with st.chat_message("model"):
+            with st.spinner("Analizuję..."):
+                SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT"]
+                FULL_PROMPT = SYSTEM_PROMPT + f"\ndomyslny_operator={op_name}\nGrupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}"
+                model = get_or_create_model(active_model, FULL_PROMPT)
+                history = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
+                chat = model.start_chat(history=history)
+                resp = chat.send_message(prompt, generation_config={"temperature": 0.0})
+                st.markdown(resp.text)
+                st.session_state.messages.append({"role": "model", "content": resp.text})
+                if 'cop#' in resp.text.lower() and 'c#' in resp.text.lower():
+                    log_stats(op_name, st.session_state.current_start_pz, parse_pz(resp.text) or "PZ_END", st.session_state.key_index)
