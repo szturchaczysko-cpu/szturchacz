@@ -21,11 +21,8 @@ try:
 except: pass
 
 # --- MENEDŻER CIASTECZEK ---
-cookies = EncryptedCookieManager(
-    password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev")
-)
-if not cookies.ready():
-    st.stop()
+cookies = EncryptedCookieManager(password=st.secrets.get("COOKIE_PASSWORD", "default_password_for_local_dev"))
+if not cookies.ready(): st.stop()
 
 # --- INICJALIZACJA BAZY DANYCH ---
 try:
@@ -35,7 +32,7 @@ try:
         firebase_admin.initialize_app(creds)
     db = firestore.client()
 except Exception as e:
-    st.error(f"Błąd połączenia z bazą danych: {e}")
+    st.error(f"Błąd bazy: {e}")
     st.stop()
 
 # --- FUNKCJE POMOCNICZE ---
@@ -104,14 +101,12 @@ def rotate_key():
 # 🚀 KONFIGURACJA MODELI
 # ==========================================
 MODEL_MAP = {
-    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-2.5-pro",
+    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-1.5-pro",
     "Gemini 3.0 Pro - Chirurgiczny": "gemini-3-pro-preview"
 }
 TEMPERATURE = 0.0
 
-# Inicjalizacja stanu
 if "operator" not in st.session_state: st.session_state.operator = cookies.get("operator", "")
-if "grupa" not in st.session_state: st.session_state.grupa = cookies.get("grupa", "")
 if "selected_model_label" not in st.session_state: st.session_state.selected_model_label = cookies.get("selected_model_label", "Gemini 1.5 Pro (2.5) - Zalecany")
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
@@ -124,49 +119,65 @@ with st.sidebar:
     st.radio("Model AI:", list(MODEL_MAP.keys()), key="selected_model_label")
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
     
+    # --- ODBIORNIK USTAWIEŃ ADMINA ---
+    assigned_role = "Operatorzy_UK/PL" # Fallback
+    admin_message = ""
+    is_key_locked = False
+
+    if st.session_state.operator:
+        try:
+            remote_cfg = db.collection("operator_configs").document(st.session_state.operator).get().to_dict()
+            if remote_cfg:
+                # 1. Przypisany klucz
+                fixed_key = remote_cfg.get("assigned_key_index", 0)
+                if fixed_key > 0:
+                    st.session_state.key_index = fixed_key - 1
+                    is_key_locked = True
+                # 2. Rola
+                assigned_role = remote_cfg.get("role", assigned_role)
+                # 3. Wiadomość
+                admin_message = remote_cfg.get("admin_message", "")
+        except: pass
+
     st.caption(f"🧠 Model: `{active_model_id}`")
-    st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
-    
-    manual_key = st.checkbox("Ręczny wybór klucza")
-    if manual_key:
-        key_options = [f"Klucz {i+1} (...{API_KEYS[i][-4:]})" for i in range(len(API_KEYS))]
-        selected_key_label = st.selectbox("Wybierz aktywny klucz:", key_options, index=st.session_state.key_index)
-        st.session_state.key_index = key_options.index(selected_key_label)
+    if is_key_locked:
+        st.success(f"🔑 Klucz stały: {st.session_state.key_index + 1}")
     else:
-        st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
+        st.caption(f"🔑 Klucz (Rotator): {st.session_state.key_index + 1}/{len(API_KEYS)}")
 
     st.markdown("---")
     st.selectbox("Operator:", ["", "Emilia", "Oliwia", "Iwona", "Marlena", "Magda", "Sylwia", "Ewelina", "Klaudia", "Marta"], key="operator")
-    st.selectbox("Grupa:", ["", "Operatorzy_DE", "Operatorzy_FR", "Operatorzy_UK/PL"], key="grupa")
     
-    TRYBY_DICT = {
-        "Standard (Panel + Koperta)": "od_szturchacza",
-        "WhatsApp (Rolka + Panel)": "WA",
-        "E-mail (Rolka + Panel)": "MAIL",
-        "Forum/Inne (Wpis + Panel)": "FORUM"
-    }
+    # Wyświetlanie roli przypisanej przez Admina
+    st.info(f"Rola: **{assigned_role}**")
+    
+    # --- OKIENKO KOMUNIKACJI ---
+    if admin_message:
+        st.warning(f"✉️ **OD ADMINA:**\n\n{admin_message}")
+
+    st.markdown("---")
+    TRYBY_DICT = {"Standard (Panel + Koperta)": "od_szturchacza", "WhatsApp (Rolka + Panel)": "WA", "E-mail (Rolka + Panel)": "MAIL", "Forum/Inne": "FORUM"}
     st.selectbox("Tryb Startowy:", list(TRYBY_DICT.keys()), key="tryb_label")
     wybrany_tryb_kod = TRYBY_DICT[st.session_state.tryb_label]
     
-    st.markdown("---")
-    if st.button("🚀 Nowa sprawa / Reset", type="primary"):
-        if not st.session_state.operator or not st.session_state.grupa:
-            st.error("Wybierz Operatora i Grupę!")
+    if st.button("🚀 Uruchom Czat", type="primary"):
+        if not st.session_state.operator:
+            st.error("Wybierz Operatora!")
         else:
             cookies['operator'] = st.session_state.operator
-            cookies['grupa'] = st.session_state.grupa
             cookies['selected_model_label'] = st.session_state.selected_model_label
             cookies.save()
             st.session_state.messages = []
             st.session_state.chat_started = True
             st.session_state.current_start_pz = None
-            if not manual_key:
+            # Jeśli nie ma stałego klucza, losujemy nowy na start sprawy
+            if not is_key_locked:
                 st.session_state.key_index = random.randint(0, len(API_KEYS) - 1)
             for k in list(st.session_state.keys()):
                 if k.startswith("cache_"): del st.session_state[k]
             st.rerun()
 
-    if st.button("🗑️ Reset Sesji (Wyloguj)"):
+    if st.button("🗑️ Reset Sesji"):
         st.session_state.clear()
         cookies.clear()
         cookies.save()
@@ -178,23 +189,28 @@ with st.sidebar:
 st.title(f"🤖 Szturchacz")
 
 if not st.session_state.chat_started:
-    st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
+    st.info("👈 Skonfiguruj panel i kliknij 'Uruchom Czat'.")
+    # Jeśli jest wiadomość od admina, pokaż ją też na środku przed startem
+    if admin_message:
+        st.warning(f"📢 **Wiadomość od Admina:** {admin_message}")
 else:
+    # Wyświetlanie ważnej wiadomości od admina na górze czatu
+    if admin_message:
+        st.error(f"📢 **WAŻNE OD ADMINA:** {admin_message}")
+
     SYSTEM_INSTRUCTION_BASE = st.secrets["SYSTEM_PROMPT"]
-    parametry_startowe = f"\ndomyslny_operator={st.session_state.operator}\ndomyslna_data={datetime.now().strftime('%d.%m')}\nGrupa_Operatorska={st.session_state.grupa}\ndomyslny_tryb={wybrany_tryb_kod}"
+    parametry_startowe = f"\ndomyslny_operator={st.session_state.operator}\ndomyslna_data={datetime.now().strftime('%d.%m')}\nGrupa_Operatorska={assigned_role}\ndomyslny_tryb={wybrany_tryb_kod}"
     FULL_PROMPT = SYSTEM_INSTRUCTION_BASE + parametry_startowe
 
     def get_or_create_model(model_name, full_prompt):
         prompt_hash = hashlib.md5(full_prompt.encode()).hexdigest()
         cache_key = f"cache_{st.session_state.key_index}_{model_name}_{prompt_hash}"
-        
         if st.session_state.get(cache_key):
             try: return genai.GenerativeModel.from_cached_content(st.session_state[cache_key])
             except: del st.session_state[cache_key]
-        
         genai.configure(api_key=get_current_key())
         if "gemini-1.5-pro" in model_name:
-            with st.spinner(f"Tworzenie cache dla klucza {st.session_state.key_index + 1}..."):
+            with st.spinner(f"Tworzenie cache..."):
                 cache = caching.CachedContent.create(model=f'models/{model_name}', system_instruction=full_prompt, ttl=timedelta(hours=1))
                 st.session_state[cache_key] = cache
                 return genai.GenerativeModel.from_cached_content(cache)
@@ -212,64 +228,40 @@ else:
                 response = chat.send_message(user_input, generation_config={"temperature": TEMPERATURE})
                 return response.text, True
             except Exception as e:
-                if isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e) or "403" in str(e):
+                if not is_key_locked and (isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e) or "403" in str(e)):
                     attempts += 1
-                    if not manual_key:
-                        rotate_key()
-                        st.toast(f"🔄 Rotacja: Klucz {st.session_state.key_index + 1}")
-                        time.sleep(1)
-                    else:
-                        return f"❌ Limit klucza {st.session_state.key_index + 1} wyczerpany. Zmień klucz ręcznie.", False
+                    rotate_key()
+                    st.toast(f"🔄 Rotacja: Klucz {st.session_state.key_index + 1}")
+                    time.sleep(1)
                 else:
                     return f"Błąd API: {str(e)}", False
         return "❌ Wszystkie klucze wyczerpane.", False
 
-    # --- LOGIKA EKRANU ---
     if len(st.session_state.messages) == 0:
-        st.subheader(f"📥 Przygotowanie wsadu ({st.session_state.operator})")
-        
-        # --- DYNAMICZNE INSTRUKCJE ---
-        if wybrany_tryb_kod == "od_szturchacza":
-            st.info("💡 **Tryb Standard:** Wklej tylko **Tabelkę z panelu** oraz **Kopertę**. O rolkę rozmowy poproszę później, jeśli będzie potrzebna.")
-        else:
-            st.warning(f"💡 **Tryb {st.session_state.tryb_label}:** Wklej **Tabelkę**, **Kopertę** oraz **Rolkę rozmowy**.")
-            st.markdown(f"Użyj poniższego nagłówka przed wklejeniem treści rozmowy:")
-            st.code(f"ROLKA_START_{wybrany_tryb_kod}")
-
-        wsad_input = st.text_area("Wklej dane tutaj:", height=350, placeholder="362352 2026-01-02...")
-        
+        st.subheader(f"📥 Pierwszy wsad ({st.session_state.operator})")
+        wsad_input = st.text_area("Wklej tabelkę i kopertę sprawy:", height=350)
         if st.button("🚀 Rozpocznij analizę", type="primary"):
             if wsad_input:
                 input_pz = parse_pz(wsad_input)
                 st.session_state.current_start_pz = input_pz if input_pz else "PZ_START"
                 st.session_state.messages.append({"role": "user", "content": wsad_input})
-                
                 with st.spinner("Analiza..."):
                     res_text, success = call_gemini_with_rotation([], wsad_input)
                     if success:
                         st.session_state.messages.append({"role": "model", "content": res_text})
                         st.rerun()
-                    else:
-                        st.error(res_text)
-                        st.session_state.messages = []
-            else:
-                st.error("Wsad nie może być pusty!")
-    
+                    else: st.error(res_text)
+            else: st.error("Wsad jest pusty!")
     else:
         st.subheader(f"💬 Rozmowa: {st.session_state.operator}")
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]): st.markdown(msg["content"])
-        
-        if prompt := st.chat_input("Odpowiedz AI (np. SESJA WYNIK)..."):
+        if prompt := st.chat_input("Odpowiedz AI..."):
             with st.chat_message("user"): st.markdown(prompt)
             st.session_state.messages.append({"role": "user", "content": prompt})
-            
             with st.chat_message("model"):
                 with st.spinner("Analizuję..."):
-                    history_api = []
-                    for m in st.session_state.messages[:-1]:
-                        history_api.append({"role": m["role"], "parts": [m["content"]]})
-                    
+                    history_api = [{"role": m["role"], "parts": [m["content"]]} for m in st.session_state.messages[:-1]]
                     res_text, success = call_gemini_with_rotation(history_api, prompt)
                     if success:
                         st.markdown(res_text)
@@ -277,5 +269,4 @@ else:
                         if 'cop#' in res_text.lower() and 'c#' in res_text.lower():
                             end_pz = parse_pz(res_text)
                             log_session_and_transition(st.session_state.operator, st.session_state.current_start_pz, end_pz if end_pz else "PZ_END")
-                    else:
-                        st.error(res_text)
+                    else: st.error(res_text)
