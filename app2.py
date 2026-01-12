@@ -83,7 +83,7 @@ all_time_diamonds = global_data.get("total_diamonds", 0)
 
 API_KEYS = st.secrets["API_KEYS"]
 MODEL_MAP = {
-    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-1.5-pro",
+    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-2.5-pro",
     "Gemini 3.0 Pro - Chirurgiczny": "gemini-3-pro-preview"
 }
 TEMPERATURE = 0.0
