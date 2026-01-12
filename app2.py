@@ -6,23 +6,29 @@ from datetime import datetime, timedelta
 import locale, time, json, re, pytz, hashlib, random
 import firebase_admin
 from firebase_admin import credentials, firestore
-from streamlit_cookies_manager import EncryptedCookieManager
 
-# --- 0. KONFIGURACJA ---
-st.set_page_config(page_title="Szturchacz AI - V4.6.21 (TEST)", layout="wide")
+# --- 0. ZABEZPIECZENIE KONFIGURACJI (app2.py jako moduł) ---
+# Nie wywołujemy st.set_page_config, bo Router już to zrobił.
 try: locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- BAZA DANYCH ---
-if not firebase_admin._apps:
-    creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
-    creds = credentials.Certificate(creds_dict)
-    firebase_admin.initialize_app(creds)
-db = firestore.client()
+# --- 1. KORZYSTANIE Z ISTNIEJĄCYCH POŁĄCZEŃ ---
+# Używamy bazy 'db' i 'cookies' zdefiniowanych w app.py (Routerze)
+if 'db' not in globals():
+    # Fallback tylko jeśli app2.py byłby uruchomiony samodzielnie
+    if not firebase_admin._apps:
+        creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
+        creds = credentials.Certificate(creds_dict)
+        firebase_admin.initialize_app(creds)
+    db = firestore.client()
+else:
+    db = globals()['db']
 
-# --- CIASTECZKA ---
-cookies = EncryptedCookieManager(password=st.secrets.get("COOKIE_PASSWORD", "dev_pass"))
-if not cookies.ready(): st.stop()
+if 'cookies' not in globals():
+    st.error("Błąd: Brak menedżera ciasteczek z Routera.")
+    st.stop()
+else:
+    cookies = globals()['cookies']
 
 # --- FUNKCJE STATYSTYK ---
 def parse_pz(text):
@@ -56,7 +62,9 @@ def log_stats(op_name, start_pz, end_pz, key_idx):
     doc_ref.set(upd, merge=True)
     db.collection("key_usage").document(today).set({str(key_idx + 1): firestore.Increment(1)}, merge=True)
 
-# --- TOŻSAMOŚĆ (Zaciągnięta z Routera app.py) ---
+# ==========================================
+# 🔑 POBIERANIE CONFIGU (Z Routera)
+# ==========================================
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
@@ -80,7 +88,7 @@ MODEL_MAP = {
 }
 TEMPERATURE = 0.0
 
-# Logika klucza (Admin > Losowanie)
+# Logika klucza
 fixed_key_idx = cfg.get("assigned_key_index", 0)
 if fixed_key_idx > 0:
     st.session_state.key_index = fixed_key_idx - 1
@@ -90,6 +98,7 @@ else:
     if "key_index" not in st.session_state:
         st.session_state.key_index = random.randint(0, len(API_KEYS) - 1)
 
+# Inicjalizacja stanu rozmowy
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
@@ -164,18 +173,25 @@ st.title(f"🤖 Szturchacz (V4.6.21)")
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
-    # !!! KLUCZOWY MOMENT: POBIERANIE PROMPTU V21 !!!
+    # !!! POBIERANIE PROMPTU V21 !!!
     SYSTEM_PROMPT = st.secrets["SYSTEM_PROMPT_V21"]
     
+    # --- 6. WSTRZYKIWANIE PARAMETRÓW (DYNAMICZNE DLA V21) ---
+    now = datetime.now(tz_pl)
+    data_krotka = now.strftime("%d.%m")
+    data_pelna = now.strftime("%A, %d.%m.%Y")
+
     p_notag = "TAK" if st.session_state.notag_val else "NIE"
     p_analizbior = "TAK" if st.session_state.analizbior_val else "NIE"
     
     parametry_startowe = f"""
-# PARAMETRY STARTOWE
+# PARAMETRY STARTOWE (GENEROWANE AUTOMATYCZNIE)
 domyslny_operator={op_name}
-domyslna_data={datetime.now(tz_pl).strftime('%d.%m')}
-Grupa_Operatorska={cfg.get('role', 'Operatorzy_DE')}
+domyslna_data={data_krotka}
+kontekst_daty='{data_pelna}'
 domyslny_tryb={wybrany_tryb_kod}
+godziny_fedex='8-16:30'
+godziny_ups='8-18'
 notag={p_notag}
 analizbior={p_analizbior}
 """
@@ -231,7 +247,6 @@ analizbior={p_analizbior}
                     res_text, success = call_gemini_with_rotation([], wsad_input)
                     if success:
                         st.session_state.messages.append({"role": "model", "content": res_text})
-                        # Logowanie statystyk (obsługa notag=TAK)
                         if (';pz=' in res_text.lower() or 'cop#' in res_text.lower()) and 'c#' in res_text.lower():
                             end_pz = parse_pz(res_text)
                             log_stats(op_name, st.session_state.current_start_pz, end_pz or "PZ_END", st.session_state.key_index)
