@@ -13,14 +13,12 @@ st.set_page_config(page_title="Szturchacz AI", layout="wide")
 try: locale.setlocale(locale.LC_TIME, "pl_PL.UTF-8")
 except: pass
 
-# --- BAZA DANYCH ---
 if not firebase_admin._apps:
     creds_dict = json.loads(st.secrets["FIREBASE_CREDS"])
     creds = credentials.Certificate(creds_dict)
     firebase_admin.initialize_app(creds)
 db = firestore.client()
 
-# --- CIASTECZKA ---
 cookies = EncryptedCookieManager(password=st.secrets.get("COOKIE_PASSWORD", "dev_pass"))
 if not cookies.ready(): st.stop()
 
@@ -66,12 +64,12 @@ if not st.session_state.password_correct:
             st.error("Błędne hasło!")
     st.stop()
 
-# --- SPRAWDZENIE ROUTINGU ---
+# --- POBIERANIE CONFIGU ---
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
-target_file = cfg.get("app_file", "app.py")
 
+target_file = cfg.get("app_file", "app.py")
 if target_file != "app.py":
     try:
         with open(target_file, encoding="utf-8") as f:
@@ -83,14 +81,11 @@ if target_file != "app.py":
         st.stop()
 
 # ==========================================
-# 🚀 LOGIKA SZTURCHACZA (app.py)
+# 🚀 LOGIKA SZTURCHACZA
 # ==========================================
-
-# Pobieranie ustawień globalnych
 global_cfg = db.collection("admin_config").document("global_settings").get().to_dict() or {}
 show_diamonds_globally = global_cfg.get("show_diamonds", True)
 
-# Pobieranie danych diamentów
 tz_pl = pytz.timezone('Europe/Warsaw')
 today_s = datetime.now(tz_pl).strftime("%Y-%m-%d")
 today_data = db.collection("stats").document(today_s).collection("operators").document(op_name).get().to_dict() or {}
@@ -100,32 +95,38 @@ all_time_diamonds = global_data.get("total_diamonds", 0)
 
 API_KEYS = st.secrets["API_KEYS"]
 MODEL_MAP = {
-    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-2.5-pro",
+    "Gemini 1.5 Pro (2.5) - Zalecany": "gemini-1.5-pro",
     "Gemini 3.0 Pro - Chirurgiczny": "gemini-3-pro-preview"
 }
 TEMPERATURE = 0.0
 
-if "key_index" not in st.session_state:
-    st.session_state.key_index = random.randint(0, len(API_KEYS) - 1)
+# --- LOGIKA PRZYPISANIA KLUCZA ---
+fixed_key_idx = cfg.get("assigned_key_index", 0)
+if fixed_key_idx > 0:
+    st.session_state.key_index = fixed_key_idx - 1
+    is_key_locked = True
+else:
+    is_key_locked = False
+    if "key_index" not in st.session_state:
+        st.session_state.key_index = random.randint(0, len(API_KEYS) - 1)
+
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
 if "current_start_pz" not in st.session_state: st.session_state.current_start_pz = None
 
 def get_current_key(): return API_KEYS[st.session_state.key_index]
 def rotate_key():
-    st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
+    if not is_key_locked:
+        st.session_state.key_index = (st.session_state.key_index + 1) % len(API_KEYS)
     return st.session_state.key_index
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.title(f"👤 {op_name}")
-    
-    # --- DIAMENTY (TYLKO JEŚLI WŁĄCZONE) ---
     if show_diamonds_globally:
         st.markdown(f"### 💎 Zamówieni kurierzy\n**Dziś:** {today_diamonds} | **Łącznie:** {all_time_diamonds}")
         st.markdown("---")
 
-    # --- WIADOMOŚĆ OD ADMINA ---
     admin_msg = cfg.get("admin_message", "")
     msg_read = cfg.get("message_read", False)
     if admin_msg:
@@ -142,15 +143,10 @@ with st.sidebar:
     active_model_id = MODEL_MAP[st.session_state.selected_model_label]
     
     st.caption(f"🧠 Model: `{active_model_id}`")
-    st.caption(f"🌡️ Temp: `{TEMPERATURE}`")
-    
-    manual_key = st.checkbox("Ręczny wybór klucza")
-    if manual_key:
-        key_options = [f"Klucz {i+1} (...{API_KEYS[i][-4:]})" for i in range(len(API_KEYS))]
-        selected_key_label = st.selectbox("Wybierz aktywny klucz:", key_options, index=st.session_state.key_index)
-        st.session_state.key_index = key_options.index(selected_key_label)
+    if is_key_locked:
+        st.success(f"🔒 Klucz przypisany: {st.session_state.key_index + 1}")
     else:
-        st.caption(f"🔑 Klucz: {st.session_state.key_index + 1}/{len(API_KEYS)}")
+        st.caption(f"🔑 Klucz (Rotator): {st.session_state.key_index + 1}/{len(API_KEYS)}")
 
     st.markdown("---")
     TRYBY_DICT = {
@@ -166,7 +162,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = True
         st.session_state.current_start_pz = None
-        if not manual_key:
+        if not is_key_locked:
             st.session_state.key_index = random.randint(0, len(API_KEYS) - 1)
         for k in list(st.session_state.keys()):
             if k.startswith("cache_"): del st.session_state[k]
@@ -196,7 +192,7 @@ else:
             except: del st.session_state[cache_key]
         genai.configure(api_key=get_current_key())
         if "gemini-1.5-pro" in model_name:
-            with st.spinner(f"Tworzenie cache..."):
+            with st.spinner(f"Tworzenie cache dla klucza {st.session_state.key_index + 1}..."):
                 cache = caching.CachedContent.create(model=f'models/{model_name}', system_instruction=full_prompt, ttl=timedelta(hours=1))
                 st.session_state[cache_key] = cache
                 return genai.GenerativeModel.from_cached_content(cache)
@@ -213,7 +209,7 @@ else:
                 response = chat.send_message(user_input, generation_config={"temperature": TEMPERATURE})
                 return response.text, True
             except Exception as e:
-                if not manual_key and (isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e) or "403" in str(e)):
+                if not is_key_locked and (isinstance(e, google_exceptions.ResourceExhausted) or "429" in str(e) or "Quota" in str(e) or "403" in str(e)):
                     attempts += 1
                     rotate_key()
                     st.toast(f"🔄 Rotacja: Klucz {st.session_state.key_index + 1}")
@@ -223,7 +219,16 @@ else:
 
     if len(st.session_state.messages) == 0:
         st.subheader(f"📥 Pierwszy wsad ({op_name})")
-        wsad_input = st.text_area("Wklej tabelkę i kopertę sprawy:", height=350)
+        
+        # --- DYNAMICZNE INSTRUKCJE WSADU ---
+        if wybrany_tryb_kod == "od_szturchacza":
+            st.info("💡 **Tryb Standard:** Wklej tylko **Tabelkę z panelu** oraz **Kopertę**. O rolkę rozmowy poproszę później, jeśli będzie potrzebna.")
+        else:
+            st.warning(f"💡 **Tryb {st.session_state.tryb_label}:** Wklej **Tabelkę**, **Kopertę** oraz **Rolkę rozmowy**.")
+            st.markdown(f"Użyj poniższego nagłówka przed wklejeniem treści rozmowy:")
+            st.code(f"ROLKA_START_{wybrany_tryb_kod}")
+
+        wsad_input = st.text_area("Wklej dane tutaj:", height=350)
         if st.button("🚀 Rozpocznij analizę", type="primary"):
             if wsad_input:
                 st.session_state.current_start_pz = parse_pz(wsad_input) or "PZ_START"
