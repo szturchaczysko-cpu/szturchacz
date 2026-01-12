@@ -29,17 +29,32 @@ def parse_pz(text):
     if match: return match.group(1).upper()
     return None
 
+
 def log_stats(op_name, start_pz, end_pz, key_idx):
     tz_pl = pytz.timezone('Europe/Warsaw')
-    today = datetime.now(tz_pl).strftime("%Y-%m-%d")
+    now_pl = datetime.now(tz_pl)
+    today = now_pl.strftime("%Y-%m-%d")
+    time_str = now_pl.strftime("%H:%M") # Pobieramy godzinę i minutę
+    
     doc_ref = db.collection("stats").document(today).collection("operators").document(op_name)
-    upd = {"sessions_completed": firestore.Increment(1)}
+    
+    upd = {
+        "sessions_completed": firestore.Increment(1),
+        # NOWOŚĆ: Dodajemy godzinę sesji do listy w bazie
+        "session_times": firestore.ArrayUnion([time_str]) 
+    }
+    
     if start_pz and end_pz:
         upd[f"pz_transitions.{start_pz}_to_{end_pz}"] = firestore.Increment(1)
         if end_pz == "PZ6":
             db.collection("global_stats").document("totals").collection("operators").document(op_name).set({"total_diamonds": firestore.Increment(1)}, merge=True)
+            
     doc_ref.set(upd, merge=True)
     db.collection("key_usage").document(today).set({str(key_idx + 1): firestore.Increment(1)}, merge=True)
+
+
+
+
 
 # ==========================================
 # 🔒 LOGOWANIE I ROUTING
