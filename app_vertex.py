@@ -73,7 +73,7 @@ global_data = db.collection("global_stats").document("totals").collection("opera
 all_time_diamonds = global_data.get("total_diamonds", 0)
 
 # Modele Vertex AI (używamy stabilnego 1.5 Pro)
-MODEL_ID = "gemini-1.5-pro-002"
+MODEL_ID = "gemini-1.5-pro"
 
 if "messages" not in st.session_state: st.session_state.messages = []
 if "chat_started" not in st.session_state: st.session_state.chat_started = False
