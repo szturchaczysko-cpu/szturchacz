@@ -4,3 +4,4 @@ firebase-admin
 pandas
 streamlit-cookies-manager
 pytz
+google-cloud-aiplatform
