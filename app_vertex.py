@@ -130,7 +130,7 @@ with st.sidebar:
     # Mapujemy nazwę wyświetlaną na nazwę techniczną Vertex AI
     # Uwaga: gemini-2.5-pro to alias dla 1.5-pro-002 w Twoim systemie
     MODEL_MAP = {
-        "gemini-2.5-pro": "gemini-1.5-pro-002", 
+        "gemini-2.5-pro": "gemini-2.5-pro", 
         "gemini-3.0-pro-preview": "gemini-3.0-pro-preview"
     }
     
