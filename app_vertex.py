@@ -128,7 +128,7 @@ with st.sidebar:
     
     # --- WYBÓR MODELU (NAPRAWIONA MAPA DLA VERTEX) ---
     MODEL_UI_MAP = {
-        "gemini-2.5-pro": "gemini-1.5-pro-002", # Twoje UI -> Techniczna nazwa Vertex
+        "gemini-2.5-pro": "gemini-2.5-pro", # Twoje UI -> Techniczna nazwa Vertex
         "gemini-3.0-pro-preview": "gemini-3.0-pro-preview"
     }
     
