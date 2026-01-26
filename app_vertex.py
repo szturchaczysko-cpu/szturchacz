@@ -116,7 +116,7 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.radio("Model AI:", ["gemini-2.5-pro", "gemini-3.0-flash-preview-0126"], key="selected_model_label")
+    st.radio("Model AI:", ["gemini-2.5-pro", "gemini-3.0-flash-preview"], key="selected_model_label")
     active_model_id = st.session_state.selected_model_label
     
     # --- PARAMETRY V21 (notag domyślnie TAK) ---
