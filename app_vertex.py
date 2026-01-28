@@ -34,7 +34,9 @@ if "notag_val" not in st.session_state or st.session_state.notag_val is False:
 op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
-
+# Wymuszenie NOTAG na TAK przy każdym odświeżeniu
+if "notag_val" not in st.session_state:
+    st.session_state.notag_val = True
 # Wybór projektu (Admin > Losowanie)
 fixed_key_idx = int(cfg.get("assigned_key_index", 0))
 if fixed_key_idx > 0:
@@ -124,7 +126,10 @@ with st.sidebar:
     
     # --- PARAMETRY V21 (notag domyślnie TAK) ---
     st.subheader("🧪 Funkcje Eksperymentalne")
-    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True) # <-- USTAWIONE NA TRUE
+
+# Używamy zmiennej z session_state, którą zainicjowaliśmy na górze jako True
+st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val")
+    
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
