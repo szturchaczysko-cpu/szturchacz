@@ -163,7 +163,7 @@ def get_remote_prompt(url):
         return ""
 
 # TWÓJ LINK RAW Z GITHUBA (Wklej tutaj swój link):
-PROMPT_URL = "https://raw.githubusercontent.com/szturchaczysko-cpu/szturchacz/refs/heads/main/prompt4622.txt"
+PROMPT_URL = "https://raw.githubusercontent.com/szturchaczysko-cpu/szturchacz/refs/heads/main/prompt4623.txt"
 
 
 if not st.session_state.chat_started:
