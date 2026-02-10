@@ -537,6 +537,8 @@ TABELA (ADMIN):
 - OPERATOR: EwelinaG | TEL=NIE | TEL_JEZYKI= | MAIL_INICJAL=EG
 - OPERATOR: Andrzej | TEL=NIE | TEL_JEZYKI= | MAIL_INICJAL=AK
 - OPERATOR: Romana | TEL=NIE | TEL_JEZYKI= | MAIL_INICJAL=AK
+- OPERATOR: Kasia | TEL=NIE | TEL_JEZYKI= | MAIL_INICJAL=KK
+
 
 [SELLERS]
 - (ADMIN: dopisz sprzedawców, jeśli mają wykonywać telefony; przykłady formatów:)
