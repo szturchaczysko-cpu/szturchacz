@@ -22,6 +22,7 @@ cookies = globals().get('cookies')
 try:
     GCP_PROJECTS = st.secrets["GCP_PROJECT_IDS"]
     if isinstance(GCP_PROJECTS, str): GCP_PROJECTS = [GCP_PROJECTS]
+    GCP_PROJECTS = list(GCP_PROJECTS)
 except:
     st.error("🚨 Błąd: Brak listy GCP_PROJECT_IDS w secrets!")
     st.stop()
@@ -33,18 +34,24 @@ op_name = st.session_state.operator
 cfg_ref = db.collection("operator_configs").document(op_name)
 cfg = cfg_ref.get().to_dict() or {}
 
-# Wybór projektu (Admin > Losowanie)
-fixed_key_idx = cfg.get("assigned_key_index", 0)
-if fixed_key_idx > 0:
-    idx = min(fixed_key_idx - 1, len(GCP_PROJECTS) - 1)
-    st.session_state.vertex_project_index = idx
-    is_project_locked = True
-else:
-    is_project_locked = False
-    if "vertex_project_index" not in st.session_state:
-        st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
+# --- PROJEKT GCP (PRZYPISANY NA SZTYWNO PRZEZ ADMINA) ---
+fixed_key_idx = int(cfg.get("assigned_key_index", 1))
+# Walidacja: upewnij się że indeks jest prawidłowy
+if fixed_key_idx < 1 or fixed_key_idx > len(GCP_PROJECTS):
+    fixed_key_idx = 1
+    st.warning(f"⚠️ Nieprawidłowy indeks projektu w konfiguracji. Ustawiono domyślnie na 1.")
 
-current_gcp_project = GCP_PROJECTS[st.session_state.vertex_project_index]
+project_index = fixed_key_idx - 1  # konwersja na 0-based
+current_gcp_project = GCP_PROJECTS[project_index]
+st.session_state.vertex_project_index = project_index
+
+# --- URL PROMPTU (PRZYPISANY NA SZTYWNO PRZEZ ADMINA) ---
+PROMPT_URL = cfg.get("prompt_url", "")
+PROMPT_NAME = cfg.get("prompt_name", "Nieprzypisany")
+
+if not PROMPT_URL:
+    st.error("🚨 Brak przypisanego promptu! Poproś admina o przypisanie promptu w panelu admina.")
+    st.stop()
 
 # Inicjalizacja Vertex AI
 if 'vertex_init_done' not in st.session_state or st.session_state.get('last_project') != current_gcp_project:
@@ -65,7 +72,6 @@ if 'vertex_init_done' not in st.session_state or st.session_state.get('last_proj
 # --- FUNKCJE POMOCNICZE ---
 def parse_pz(text):
     if not text: return None
-    # Szuka PZ+cyfra (np. PZ0, PZ12, PZ=PZ5)
     match = re.search(r'(PZ\d+)', text, re.IGNORECASE)
     if match: return match.group(1).upper()
     return None
@@ -94,7 +100,11 @@ show_diamonds = global_cfg.get("show_diamonds", True)
 
 with st.sidebar:
     st.title(f"👤 {op_name}")
-    st.success(f"🚀 SILNIK: VERTEX AI")
+    
+    # --- INFORMACJA O PROJEKCIE I PROMPTIE ---
+    st.markdown(f"**🔑 Projekt:** `{current_gcp_project}`")
+    st.markdown(f"**📄 Prompt:** `{PROMPT_NAME}`")
+    st.markdown("---")
     
     if show_diamonds:
         tz_pl = pytz.timezone('Europe/Warsaw')
@@ -117,14 +127,12 @@ with st.sidebar:
     st.radio("Model AI:", ["gemini-2.5-pro", "gemini-2.5-flash"], key="selected_model_label")
     active_model_id = st.session_state.selected_model_label
     
-    # --- PARAMETRY V21 (notag domyślnie TAK) ---
+    # --- PARAMETRY EKSPERYMENTALNE ---
     st.subheader("🧪 Funkcje Eksperymentalne")
-    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True) # <-- USTAWIONE NA TRUE
+    st.toggle("Tryb NOTAG (Tag-Koperta)", key="notag_val", value=True)
     st.toggle("Tryb ANALIZBIOR (Wsad zbiorczy)", key="analizbior_val", value=False)
     
     st.caption(f"🧠 Model ID: `{active_model_id}`")
-    if is_project_locked: st.info(f"🔒 Projekt stały: {st.session_state.vertex_project_index + 1}")
-    else: st.caption(f"🔄 Projekt (LB): {st.session_state.vertex_project_index + 1}")
 
     st.markdown("---")
     TRYBY_DICT = {"Standard": "od_szturchacza", "WA": "WA", "MAIL": "MAIL", "FORUM": "FORUM"}
@@ -135,8 +143,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.chat_started = False
         st.session_state.current_start_pz = None
-        if not is_project_locked:
-            st.session_state.vertex_project_index = random.randint(0, len(GCP_PROJECTS) - 1)
+        # Nie losujemy projektu — jest na sztywno z admina
         st.rerun()
 
     if st.button("🚪 Wyloguj"):
@@ -162,20 +169,17 @@ def get_remote_prompt(url):
         st.error(f"Błąd pobierania promptu z GitHub: {e}")
         return ""
 
-# TWÓJ LINK RAW Z GITHUBA (Wklej tutaj swój link):
-PROMPT_URL = "https://raw.githubusercontent.com/szturchaczysko-cpu/szturchacz/refs/heads/main/prompt4623.txt"
-
 
 if not st.session_state.chat_started:
     st.info("👈 Skonfiguruj panel i kliknij 'Nowa sprawa / Reset'.")
 else:
-    # !!! POBIERANIE PROMPTU V21 !!!
- # !!! POBIERANIE PROMPTU Z GITHUB ZAMIAST SECRETS !!!
+    # POBIERANIE PROMPTU Z GITHUB (URL z konfiguracji admina)
     SYSTEM_PROMPT = get_remote_prompt(PROMPT_URL)
     
     if not SYSTEM_PROMPT:
-        st.error("Nie udało się załadować promptu. Aplikacja wstrzymana.")
+        st.error("Nie udało się załadować promptu. Sprawdź URL w konfiguracji admina.")
         st.stop()
+
     tz_pl = pytz.timezone('Europe/Warsaw')
     now = datetime.now(tz_pl)
     
@@ -221,9 +225,9 @@ analizbior={p_analizbior}
                         st.markdown(response.text)
                         st.session_state.messages.append({"role": "model", "content": response.text})
                         
-                        # Logowanie statystyk (obsługa notag=TAK)
+                        # Logowanie statystyk
                         if (';pz=' in response.text.lower() or 'cop#' in response.text.lower()) and 'c#' in response.text.lower():
-                            log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END", st.session_state.vertex_project_index)
+                            log_stats(op_name, st.session_state.current_start_pz, parse_pz(response.text) or "PZ_END", project_index)
                         
                         success = True
                         break
