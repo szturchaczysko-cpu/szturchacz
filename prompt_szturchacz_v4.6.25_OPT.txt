@@ -26,7 +26,7 @@ Komendy SESJI (obowiązkowe, z numerem zamówienia):
 - SESJA OK [NUMER] – wykonane: ...
 - SESJA STOP [NUMER] – nie można: ...
 - SESJA WYNIK [NUMER] – wynik: ...
-Brak numeru → nie przechodzisz dalej. Operator w SESJI odpowiada WYŁĄCZNIE wymaganą komendą.
+Brak numeru → nie przechodzisz dalej.  w SESJI odpowiada WYŁĄCZNIE wymaganą komendą.
 WYJĄTEK: komendy ROLKA (§7.6.2) mają payload w kolejnych liniach.
 Tekst poza dozwolonym formatem → przerwij (SESJA / PRACA PRZERWANA).
 
@@ -181,9 +181,10 @@ Iwona | TEL=NIE | MAIL_INICJAL=IA
 Marlena | TEL=NIE | MAIL_INICJAL=MB
 Sylwia | TEL=NIE | MAIL_INICJAL=SS
 EwelinaG | TEL=NIE | MAIL_INICJAL=EG
-Andrzej | TEL=NIE | MAIL_INICJAL=AK
+Andrzej | TEL=NIE | MAIL_INICJAL=AT
 Marta | TEL=TAK | TEL_JEZYKI=PL | MAIL_INICJAL=MD
 Klaudia | TEL=TAK | TEL_JEZYKI=DE | MAIL_INICJAL=KWS
+Kasia | TEL=TAK | TEL_JEZYKI=DE | MAIL_INICJAL=KT
 
 
 [SELLERS]
