@@ -627,7 +627,7 @@ TABELA (ADMIN):
 - OPERATOR: Andrzej | TEL=NIE | TEL_JEZYKI= | MAIL_INICJAL=AT
 - OPERATOR: Marta | TEL=TAK | TEL_JEZYKI=PL | MAIL_INICJAL=MD
 - OPERATOR: Klaudia | TEL=TAK | TEL_JEZYKI=DE | MAIL_INICJAL=KWS
-- OPERATOR: Kasia | TEL=TAK | TEL_JEZYKI=DE | MAIL_INICJAL=KT
+- OPERATOR: Kasia | TEL=TAK | TEL_JEZYKI=FR | MAIL_INICJAL=KT
 
 
 
@@ -2453,5 +2453,6 @@ CLARIFY V4.6.21 (🟥) — analizbior=TAK w trybie OVERRIDE
 
 4. Nie stosujesz formatu 0.4 (4 sekcje) i nie uruchamiasz analizy sprawy w tym kroku. Czekasz na wsad.
 """
+
 
 
