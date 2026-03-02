@@ -1,3 +1,4 @@
+st.stop()
 import requests
 import streamlit as st
 import vertexai
